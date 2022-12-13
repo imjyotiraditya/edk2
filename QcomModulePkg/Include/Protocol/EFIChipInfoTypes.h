@@ -54,7 +54,7 @@
 #define EFICHIPINFO_MAX_NAME_LENGTH EFICHIPINFO_MAX_ID_LENGTH
 
 /**
-  Maximum number of CPU clusters supported by the GetDefectiveParts API
+  Maximum number of CPU clusters supported by the GetSubsetParts API
  **/
 #define EFICHIPINFO_MAX_CPU_CLUSTERS 4
 
@@ -146,7 +146,7 @@ typedef enum
 } EFIChipInfoFoundryIdType;
 
 /**
- * Defective parts supported by the GetDefectivePart API
+ * Subset parts supported by the GetsubsetPart API
  */
 typedef enum
 {
