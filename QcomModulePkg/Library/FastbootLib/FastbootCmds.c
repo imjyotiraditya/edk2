@@ -49,7 +49,7 @@ found at
 /*
  * Changes from Qualcomm Innovation Center are provided under the following license:
  *
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  *  Redistribution and use in source and binary forms, with or without
  *  modification, are permitted (subject to the limitations in the
@@ -82,11 +82,11 @@ found at
  *  IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
+#include <Library/Debug.h>
 #include <Library/DeviceInfo.h>
 #include <Library/DevicePathLib.h>
 #include <Library/MemoryAllocationLib.h>
@@ -124,11 +124,186 @@ found at
 #include "SparseFormat.h"
 #include "Recovery.h"
 
+#ifdef ASUS_AI2205_BUILD
+#include "libavb/libavb.h"
+
+BOOLEAN AllowParallelDownloadFlash = TRUE;
+BOOLEAN g_allow_flash_and_erase_asdf = FALSE;
+BOOLEAN ALLOW_FLASH_AFTER_CHECK_SOC = FALSE;
+
+#define SECBOOT_FUSE 0
+#define SHK_FUSE 1
+#define DEBUG_DISABLED_FUSE 2
+#define ANTI_ROLLBACK_FUSE 3
+#define FEC_ENABLED_FUSE 4
+#define RPMB_ENABLED_FUSE 5
+#define DEBUG_RE_ENABLED_FUSE 6
+#define MISC_DEBUG_FUSE 7
+#define TZ_DEBUG_FUSE 8
+#define MSS_DEBUG_FUSE 9
+#define CP_DEBUG_FUSE 10
+
+#define CHECK_BIT(var, pos) ((var) & (1 << (pos)))
+
+STATIC CONST CHAR16 *VerifiedBootPartition[] = {
+	L"boot",
+	L"vendor_boot",
+	L"dtbo",
+	L"system",
+	L"vendor",
+	L"vbmeta",
+	L"vbmeta_system",
+	L"super"
+};
+
+STATIC CONST CHAR16 *UserFlashPartition[] = {
+	L"asuskey2",
+	L"asuskey3",
+	L"sig",
+	L"sha256",
+	L"signature",
+	L"partition",
+	L"userdata",
+	L"asdf",
+	L"CRC",
+	L"APD",
+	L"ADF",
+	L"metadata",
+	L"apdp",
+	L"batinfo",
+	L"gpt",
+	L"logbuf"
+};
+STATIC CONST CHAR16 *UserErasePartition[] = {
+	L"userdata",
+	L"asdf",
+	L"super",
+	L"ddr",
+	L"APD",
+	L"ADF",
+	L"xrom",
+	L"asuskey3",
+	L"asuskey5",
+	L"metadata",
+	L"apdp",
+	L"batinfo",
+	L"gpt",
+	L"spunvm",
+	L"logbuf",
+	L"misc",
+};
+#endif
+
+#ifdef ASUS_BUILD
+#include "abl.h"
+
+// +++ ASUS_BSP : add for user unlock
+#include <Protocol/EFISecRSA.h>
+#include "SecRSATestApp.h"
+#include "VerifiedBoot.h"
+// --- ASUS_BSP : add for user unlock
+
+// +++ ASUS_BSP : add for fastboot permission
+#define ASUS_FASTBOOT_PERMISSION (!IsSecureBootEnabled() || IsAuthorized() || IsAuthorized_2())
+extern unsigned is_ftm_mode(void);
+
+extern char cmd_stage_id[64]; // +++ ASUS_BSP : add for force hwid
+extern char asus_project_info[32]; // +++ ASUS_BSP : update project name
+extern char cid_name[32];
+
+STATIC int IsRawFlash = 0;
+STATIC int IsRawFlash_gpt = 0;
+STATIC BOOLEAN IsASUSRawFlash = FALSE;
+
+// +++ ASUS_BSP : add for ckeck CRC_partiiton:0~6
+unsigned int g_calculate_gpt0_crc = 0xffffffff;
+unsigned int g_calculate_gpt1_crc = 0xffffffff;
+unsigned int g_calculate_gpt2_crc = 0xffffffff;
+unsigned int g_calculate_gpt3_crc = 0xffffffff;
+unsigned int g_calculate_gpt4_crc = 0xffffffff;
+unsigned int g_calculate_gpt5_crc = 0xffffffff;
+unsigned int g_calculate_gpt6_crc = 0xffffffff;
+unsigned int g_calculate_gpt7_crc = 0xffffffff;
+// --- ASUS_BSP : add for ckeck CRC_partiiton:0~6
+
+// +++ ASUS_BSP : add for check crc
+unsigned int g_calculate_crc = 0xffffffff;
+unsigned int g_flash_crc = 0xffffffff;
+// +++ ASUS_BSP : add for check crc
+
+// +++ ASUS_BSP : add for ASUS dongle unlock
+#include <Md5.h>
+int ASUS_GEN_RANDOM_FLAG = 0;
+char rand_number[34]={};
+//char *rand_number = "08000260013335480527294877279139";
+char calculate_hash_buf[65]={};
+char mmc_hash_buf[65]={};
+char key[9]="12345678";
+char key2[9]="28825252";
+int hash_buf_size = 64;
+
+typedef unsigned short uint16;
+
+typedef enum
+{
+	A68 = 1,
+	Undefine_operator1,
+	Undefine_operator2,
+	Undefine_operator3,
+	MAX_Algo
+}dongleAlgoType;
+// --- ASUS_BSP : add for ASUS dongle unlock
+
+// +++ ASUS_BSP : add for update cmdline
+char cmd_update_cmdline[64] = {0};
+extern char cmd_prj_id[64];
+extern char cmd_stage_id[64];
+extern char cmd_sku_id[64];
+extern char cmd_ddr_id[64];
+extern char cmd_nfc_id[64];
+extern char cmd_rf_id[64];
+extern char cmd_fp_id[64];
+extern char cmd_country_code[128];
+extern char cmd_lgf_id[64];
+extern char cmd_lgf_con_id[64];
+extern char cmd_fc_id[64];
+extern char cmd_upper_id[64];
+extern char cmd_sub_id[64];
+extern char* asus_strtok ( char* str, const char* delimiters);
+// --- ASUS_BSP : add for update cmdline
+
+BOOLEAN g_asus_slot_b_enable = FALSE; // +++ ASUS_BSP : add for enable flash raw in slot_b
+#endif
+
+#ifdef ASUS_BUILD
+STATIC VOID CmdOemSha256(CONST CHAR8 * arg, VOID * data, UINT32 sz); // +++ ASUS_BSP : add for FRP unlck
+void random_num_generator(char *rand_num);
+STATIC struct GetVarPartitionInfo part_info[] = {
+#ifdef F2FS_BUILD
+    {"userdata", "partition-size:", "partition-type:", "", "f2fs"},
+#else
+    {"userdata", "partition-size:", "partition-type:", "", "ext4"},
+#endif
+    {"cache", "partition-size:", "partition-type:", "", "ext4"},
+    {"asdf", "partition-size:", "partition-type:", "", "ext4"},
+    {"APD", "partition-size:", "partition-type:", "", "ext4"},
+    {"ADF", "partition-size:", "partition-type:", "", "ext4"},
+    {"xrom", "partition-size:", "partition-type:", "", "ext4"},
+    {"system", "partition-size:", "partition-type:", "", "ext4"},
+    {"vendor", "partition-size:", "partition-type:", "", "ext4"},
+    {"metadata", "partition-size:", "partition-type:", "", "f2fs"},
+    {"batinfo", "partition-size:", "partition-type:", "", "ext4"},
+#ifdef ASUS_AI2205_BUILD
+    {"logbuf", "partition-size:", "partition-type:", "", "ext4"},
+#endif
+};
+#else
 STATIC struct GetVarPartitionInfo part_info[] = {
     {"system", "partition-size:", "partition-type:", "", "ext4"},
     {"userdata", "partition-size:", "partition-type:", "", "ext4"},
     {"cache", "partition-size:", "partition-type:", "", "ext4"},
 };
+#endif
 
 STATIC struct GetVarPartitionInfo PublishedPartInfo[MAX_NUM_PARTITIONS];
 
@@ -143,7 +318,7 @@ STATIC BOOLEAN
 IsCriticalPartition (CHAR16 *PartitionName);
 
 STATIC CONST CHAR16 *VirtualAbCriticalPartitions[] = {
-    L"misc",  L"metadata",  L"userdata"};
+    L"misc",  L"metadata",  L"userdata",  L"asdf"};
 
 STATIC BOOLEAN
 CheckVirtualAbCriticalPartition (CHAR16 *PartitionName);
@@ -411,7 +586,6 @@ VOID PartitionDump (VOID)
   }
 }
 
-STATIC
 EFI_STATUS
 PartitionGetInfo (IN CHAR16 *PartitionName,
                   OUT EFI_BLOCK_IO_PROTOCOL **BlockIo,
@@ -458,10 +632,8 @@ STATIC VOID FastbootPublishSlotVars (VOID)
   CHAR8 *Suffix = NULL;
   UINT32 PartitionCount = 0;
   CHAR8 PartitionNameAscii[MAX_GPT_NAME_SIZE];
-  UINT64 RetryCount = 0;
+  UINT32 RetryCount = 0;
   BOOLEAN Set = FALSE;
-  STATIC BOOLEAN IsMultiSlot_ABC;
-  IsMultiSlot_ABC = (SlotCount == MAX_SLOTS);
 
   GetPartitionCount (&PartitionCount);
   /*Scan through partition entries, populate the attributes*/
@@ -503,9 +675,8 @@ STATIC VOID FastbootPublishSlotVars (VOID)
       AsciiStrnCpyS (BootSlotInfo[j].SlotRetryCountVar, SLOT_ATTR_SIZE,
                      "slot-retry-count:", AsciiStrLen ("slot-retry-count:"));
       RetryCount =
-          (PtnEntries[i].PartEntry.Attributes & (IsMultiSlot_ABC ?
-            PART_ATT_MAX_RETRY_COUNT_VAL_ABC : PART_ATT_MAX_RETRY_COUNT_VAL))
-            >> PART_ATT_MAX_RETRY_CNT_BIT;
+          (PtnEntries[i].PartEntry.Attributes & PART_ATT_MAX_RETRY_COUNT_VAL) >>
+          PART_ATT_MAX_RETRY_CNT_BIT;
       AsciiSPrint (BootSlotInfo[j].SlotRetryCountVal, ATTR_RESP_SIZE, "%llu",
                    RetryCount);
       AsciiStrnCatS (BootSlotInfo[j].SlotRetryCountVar, SLOT_ATTR_SIZE, Suffix,
@@ -601,7 +772,7 @@ WriteToDisk (IN EFI_BLOCK_IO_PROTOCOL *BlockIo,
              IN UINT64 Size,
              IN UINT64 offset)
 {
-  return WriteBlockToPartition (BlockIo, Handle, offset, Size, Image);
+  return WriteBlockToPartitionNoFlush (BlockIo, Handle, offset, Size, Image);
 }
 
 STATIC BOOLEAN
@@ -623,11 +794,9 @@ GetPartitionHasSlot (CHAR16 *PartitionName,
               StrLen (CurrentSlot.Suffix));
     HasSlot = TRUE;
   } else {
-    /* Check for _a or _b or _c slots,
-       if available then copy to SlotSuffix Array */
+    /*Check for _a or _b slots, if available then copy to SlotSuffix Array*/
     if (StrStr (PartitionName, (CONST CHAR16 *)L"_a") ||
-        StrStr (PartitionName, (CONST CHAR16 *)L"_b") ||
-        StrStr (PartitionName, (CONST CHAR16 *)L"_c")) {
+        StrStr (PartitionName, (CONST CHAR16 *)L"_b")) {
       StrnCpyS (SlotSuffix, SlotSuffixMaxSize,
                 (PartitionName + (StrLen (PartitionName) - 2)), 2);
       HasSlot = TRUE;
@@ -1025,8 +1194,11 @@ HandleSparseImgFlash (IN CHAR16 *PartitionName,
   if (SparseImgData.TotalBlocks != sparse_header->total_blks) {
     DEBUG ((EFI_D_ERROR, "Sparse Image Write Failure\n"));
     Status = EFI_VOLUME_CORRUPTED;
+  } else if (((SparseImgData.BlockIo)->FlushBlocks (SparseImgData.BlockIo))
+               != EFI_SUCCESS) {
+    DEBUG ((EFI_D_ERROR, "Sparse Image Flush Failure\n"));
+    Status = EFI_DEVICE_ERROR;
   }
-
   return Status;
 }
 
@@ -1127,6 +1299,7 @@ HandleRawImgFlash (IN CHAR16 *PartitionName,
       !(StrnCmp (PartitionName, (CONST CHAR16 *)L"boot",
                  StrLen ((CONST CHAR16 *)L"boot"))))
     FastbootUpdateAttr (SlotSuffix);
+
   return Status;
 }
 
@@ -1344,9 +1517,45 @@ FastbootErasePartition (IN CHAR16 *PartitionName)
     DEBUG ((EFI_D_ERROR, "Partition Erase failed: %r\n", Status));
     return Status;
   }
+  
+  //write 0 to partition
+  VOID *Buffer;
+  UINT64  BufferSize = ALIGNMENT_MASK_4KB;
+  Buffer = AllocatePages(ALIGN_PAGES(BufferSize, ALIGNMENT_MASK_4KB));
+  memset(Buffer,0,BufferSize);
+  Status = WriteBlockToPartition (BlockIo, Handle, 0, BufferSize, Buffer);
+  if (Status != EFI_SUCCESS) {
+    DEBUG((EFI_D_ERROR, "[ABL] FastbootErasePartition: Partition write 0 failed: %r\n", Status));
+    return Status;
+  }
 
   if (!(StrCmp (L"userdata", PartitionName)))
     Status = ResetDeviceState ();
+
+#ifdef ASUS_AI2205_BUILD
+  //+++ ASUS_BSP : erase_frp_partition
+  if (!(StrCmp(L"frp", PartitionName))) {
+    Status = erase_frp_partition();
+  }
+  //--- ASUS_BSP : erase_frp_partition
+  else if (!(StrCmp(L"fsg", PartitionName))) {
+    Status = erase_fsg();
+  }
+  else if (!(StrCmp(L"apdp", PartitionName))) {
+    Status = erase_apdp_partition();
+  }
+  else if (!(StrCmp(L"modemst1", PartitionName))) {
+    Status = erase_modemst1();
+  }
+  else if (!(StrCmp(L"modemst2", PartitionName))) {
+    Status = erase_modemst2();
+  }
+
+  if (Status != EFI_SUCCESS) {
+    DEBUG((EFI_D_ERROR, "[ABL] FastbootErasePartition: Partition Erase failed: %r\n", Status));
+    return Status;
+  }
+#endif
 
   return Status;
 }
@@ -1404,6 +1613,26 @@ EFI_STATUS CreateSparseImgFlashThread (IN FlashInfo* ThreadFlashInfo)
 }
 
 #endif
+
+STATIC VOID WaitForTransferComplete (VOID)
+{
+  USB_DEVICE_EVENT Msg;
+  USB_DEVICE_EVENT_DATA Payload;
+  UINTN PayloadSize;
+
+  /* Wait for the transfer to complete */
+  while (1) {
+    GetFastbootDeviceData ()->UsbDeviceProtocol->HandleEvent (&Msg,
+            &PayloadSize, &Payload);
+    if (UsbDeviceEventTransferNotification == Msg) {
+      if (1 == USB_INDEX_TO_EP (Payload.TransferOutcome.EndpointIndex)) {
+        if (USB_ENDPOINT_DIRECTION_IN ==
+            USB_INDEX_TO_EPDIR (Payload.TransferOutcome.EndpointIndex))
+          break;
+      }
+    }
+  }
+}
 
 /* Handle Download Command */
 STATIC VOID
@@ -1587,6 +1816,51 @@ IsBootPtnUpdated (INT32 Lun, BOOLEAN *BootPtnUpdated)
   }
 }
 
+#ifdef ASUS_AI2205_BUILD
+
+STATIC BOOLEAN VerifiedBootPartitionCheck(CHAR16 *PartitionName){
+  UINT32 i =0;
+
+  if (PartitionName == NULL)
+      return FALSE;
+
+  for (i = 0; i < ARRAY_SIZE(VerifiedBootPartition); i++) {
+      if (!StrnCmp(PartitionName, VerifiedBootPartition[i], StrLen(VerifiedBootPartition[i])))
+          return TRUE;
+  }
+
+  return FALSE;
+}
+
+STATIC BOOLEAN UserFlashPartitionCheck(CHAR16 *PartitionName){
+  UINT32 i =0;
+
+  if (PartitionName == NULL)
+      return FALSE;
+
+  for (i = 0; i < ARRAY_SIZE(UserFlashPartition); i++) {
+      if (!StrnCmp(PartitionName, UserFlashPartition[i], StrLen(UserFlashPartition[i])))
+          return TRUE;
+  }
+
+  return FALSE;
+}
+
+STATIC BOOLEAN UserErasePartitionCheck(CHAR16 *PartitionName){
+  UINT32 i =0;
+
+  if (PartitionName == NULL)
+      return FALSE;
+
+  for (i = 0; i < ARRAY_SIZE(UserErasePartition); i++) {
+      if (!StrnCmp(PartitionName, UserErasePartition[i], StrLen(UserErasePartition[i])))
+          return TRUE;
+  }
+
+  return FALSE;
+}
+#endif
+
 STATIC BOOLEAN
 IsCriticalPartition (CHAR16 *PartitionName)
 {
@@ -1609,6 +1883,18 @@ CheckVirtualAbCriticalPartition (CHAR16 *PartitionName)
 {
   VirtualAbMergeStatus SnapshotMergeStatus;
   UINT32 Iter = 0;
+  EFI_STATUS Status = EFI_SUCCESS;
+  
+  // +++ ASUS_BSP : set SnapshotMergeStatus to none and skip check partiton if it is raw flash
+  if(IsASUSRawFlash && (GetSnapshotMergeStatus () != NONE_MERGE_STATUS)){
+	Status = SetSnapshotMergeStatus (NONE_MERGE_STATUS);
+    if (Status != EFI_SUCCESS) {
+      FastbootFail ("Failed to update snapshot state to NONE");
+      return FALSE;
+    }  
+    return FALSE;
+  }
+  // --- ASUS_BSP : set SnapshotMergeStatus to none and skip check partiton if it is raw flash
 
   SnapshotMergeStatus = GetSnapshotMergeStatus ();
   if ((SnapshotMergeStatus == MERGING ||
@@ -1706,6 +1992,225 @@ ReenumeratePartTable (VOID)
   return Status;
 }
 
+STATIC VOID
+CheckPartitionFsSignature (IN CHAR16 *PartName,
+                           OUT FS_SIGNATURE *FsSignature)
+{
+  EFI_BLOCK_IO_PROTOCOL *BlockIo = NULL;
+  EFI_HANDLE *Handle = NULL;
+  EFI_STATUS Status = EFI_SUCCESS;
+  UINT32 BlkSz = 0;
+  CHAR8 *FsSuperBlk = NULL;
+  CHAR8 *FsSuperBlkBuffer = NULL;
+  UINT32 SuperBlkLba = 0;
+
+  *FsSignature = UNKNOWN_FS_SIGNATURE;
+
+  Status = PartitionGetInfo (PartName, &BlockIo, &Handle);
+  if (Status != EFI_SUCCESS) {
+    DEBUG ((EFI_D_ERROR, "Failed to Info for %s partition\n", PartName));
+    return;
+  }
+  if (!BlockIo) {
+    DEBUG ((EFI_D_ERROR, "BlockIo for %s is corrupted\n", PartName));
+    return;
+  }
+
+  BlkSz = BlockIo->Media->BlockSize;
+  FsSuperBlkBuffer = AllocateZeroPool (BlkSz);
+  if (!FsSuperBlkBuffer) {
+    DEBUG ((EFI_D_ERROR, "Failed to allocate buffer for superblock %s\n",
+                            PartName));
+    return;
+  }
+  FsSuperBlk = FsSuperBlkBuffer;
+  SuperBlkLba = (FS_SUPERBLOCK_OFFSET / BlkSz);
+
+  BlockIo->ReadBlocks (BlockIo, BlockIo->Media->MediaId,
+                           SuperBlkLba,
+                           BlkSz, FsSuperBlkBuffer);
+
+  /* If superblklba is 0, it means super block is part of first block read */
+  if (SuperBlkLba == 0) {
+    FsSuperBlk += FS_SUPERBLOCK_OFFSET;
+  }
+
+  if (*((UINT16 *)&FsSuperBlk[EXT_MAGIC_OFFSET_SB]) == (UINT16)EXT_FS_MAGIC) {
+    DEBUG ((EFI_D_VERBOSE, "%s Found EXT FS type\n", PartName));
+    *FsSignature = EXT_FS_SIGNATURE;
+  } else if (*((UINT32 *)&FsSuperBlk[F2FS_MAGIC_OFFSET_SB]) ==
+              (UINT32)F2FS_FS_MAGIC) {
+      DEBUG ((EFI_D_VERBOSE, "%s Found F2FS FS type\n", PartName));
+      *FsSignature = F2FS_FS_SIGNATURE;
+    } else {
+        DEBUG ((EFI_D_VERBOSE, "%s No Known FS type Found\n", PartName));
+  }
+
+  if (FsSuperBlkBuffer) {
+     FreePool (FsSuperBlkBuffer);
+  }
+  return;
+}
+
+STATIC EFI_STATUS
+GetPartitionType (IN CHAR16 *PartName, OUT CHAR8 * PartType)
+{
+  UINT32 LoopCounter;
+  CHAR8 AsciiPartName[MAX_GET_VAR_NAME_SIZE];
+  FS_SIGNATURE FsSignature;
+
+  if (PartName == NULL ||
+      PartType == NULL) {
+    DEBUG ((EFI_D_ERROR, "Invalid parameters to GetPartitionType\n"));
+    return EFI_INVALID_PARAMETER;
+  }
+
+  /* By default copy raw to response */
+  AsciiStrnCpyS (PartType, MAX_GET_VAR_NAME_SIZE,
+                  RAW_FS_STR, AsciiStrLen (RAW_FS_STR));
+  UnicodeStrToAsciiStr (PartName, AsciiPartName);
+
+  /* Mark partition type for hard-coded partitions only */
+  for (LoopCounter = 0; LoopCounter < ARRAY_SIZE (part_info); LoopCounter++) {
+    /* Check if its a hardcoded partition type */
+    if (!AsciiStrnCmp ((CONST CHAR8 *) AsciiPartName,
+                          part_info[LoopCounter].part_name,
+                          AsciiStrLen (part_info[LoopCounter].part_name))) {
+      /* Check filesystem type present on partition */
+      CheckPartitionFsSignature (PartName, &FsSignature);
+      switch (FsSignature) {
+        case EXT_FS_SIGNATURE:
+          AsciiStrnCpyS (PartType, MAX_GET_VAR_NAME_SIZE, EXT_FS_STR,
+                          AsciiStrLen (EXT_FS_STR));
+          break;
+        case F2FS_FS_SIGNATURE:
+          AsciiStrnCpyS (PartType, MAX_GET_VAR_NAME_SIZE, F2FS_FS_STR,
+                          AsciiStrLen (F2FS_FS_STR));
+          break;
+        case UNKNOWN_FS_SIGNATURE:
+          /* Copy default hardcoded type in case unknown partition type */
+          AsciiStrnCpyS (PartType, MAX_GET_VAR_NAME_SIZE,
+                          part_info[LoopCounter].type_response,
+                          AsciiStrLen (part_info[LoopCounter].type_response));
+      }
+    }
+  }
+  return EFI_SUCCESS;
+}
+
+STATIC EFI_STATUS
+GetPartitionSizeViaName (IN CHAR16 *PartName, OUT CHAR8 * PartSize)
+{
+  EFI_BLOCK_IO_PROTOCOL *BlockIo = NULL;
+  EFI_HANDLE *Handle = NULL;
+  EFI_STATUS Status = EFI_INVALID_PARAMETER;
+  UINT64 PartitionSize;
+
+  Status = PartitionGetInfo (PartName, &BlockIo, &Handle);
+  if (Status != EFI_SUCCESS) {
+    return Status;
+  }
+
+  if (!BlockIo) {
+    DEBUG ((EFI_D_ERROR, "BlockIo for %s is corrupted\n", PartName));
+    return EFI_VOLUME_CORRUPTED;
+  }
+
+  PartitionSize = GetPartitionSize (BlockIo);
+  if (!PartitionSize) {
+    return EFI_BAD_BUFFER_SIZE;
+  }
+
+  AsciiSPrint (PartSize, MAX_RSP_SIZE, " 0x%llx", PartitionSize);
+  return EFI_SUCCESS;
+
+}
+
+STATIC EFI_STATUS
+PublishGetVarPartitionInfo (
+                            IN struct GetVarPartitionInfo *PublishedPartInfo,
+                            IN UINT32 NumParts)
+{
+  UINT32 PtnLoopCount;
+  EFI_STATUS Status = EFI_INVALID_PARAMETER;
+  EFI_STATUS RetStatus = EFI_SUCCESS;
+  CHAR16 *PartitionNameUniCode = NULL;
+  BOOLEAN PublishType;
+  BOOLEAN PublishSize;
+
+  /* Clear Published Partition Buffer */
+  gBS->SetMem (PublishedPartInfo,
+          sizeof (struct GetVarPartitionInfo) * MAX_NUM_PARTITIONS, 0);
+
+  /* Loop will go through each partition entry
+     and publish info for all partitions.*/
+  for (PtnLoopCount = 1; PtnLoopCount <= NumParts; PtnLoopCount++) {
+    PublishType = FALSE;
+    PublishSize = FALSE;
+    PartitionNameUniCode = PtnEntries[PtnLoopCount].PartEntry.PartitionName;
+    /* Skip Null/last partition */
+    if (PartitionNameUniCode[0] == '\0') {
+      continue;
+    }
+    UnicodeStrToAsciiStr (PtnEntries[PtnLoopCount].PartEntry.PartitionName,
+                          (CHAR8 *)PublishedPartInfo[PtnLoopCount].part_name);
+
+    /* Fill partition size variable and response string */
+    AsciiStrnCpyS (PublishedPartInfo[PtnLoopCount].getvar_size_str,
+                      MAX_GET_VAR_NAME_SIZE, "partition-size:",
+                      AsciiStrLen ("partition-size:"));
+    Status = AsciiStrnCatS (PublishedPartInfo[PtnLoopCount].getvar_size_str,
+                            MAX_GET_VAR_NAME_SIZE,
+                            PublishedPartInfo[PtnLoopCount].part_name,
+                            AsciiStrLen (
+                              PublishedPartInfo[PtnLoopCount].part_name));
+    if (!EFI_ERROR (Status)) {
+      Status = GetPartitionSizeViaName (
+                            PartitionNameUniCode,
+                            PublishedPartInfo[PtnLoopCount].size_response);
+      if (Status == EFI_SUCCESS) {
+        PublishSize = TRUE;
+      }
+    }
+
+    /* Fill partition type variable and response string */
+    AsciiStrnCpyS (PublishedPartInfo[PtnLoopCount].getvar_type_str,
+                    MAX_GET_VAR_NAME_SIZE, "partition-type:",
+                    AsciiStrLen ("partition-type:"));
+    Status = AsciiStrnCatS (PublishedPartInfo[PtnLoopCount].getvar_type_str,
+                              MAX_GET_VAR_NAME_SIZE,
+                              PublishedPartInfo[PtnLoopCount].part_name,
+                              AsciiStrLen (
+                                PublishedPartInfo[PtnLoopCount].part_name));
+    if (!EFI_ERROR (Status)) {
+      Status = GetPartitionType (
+                            PartitionNameUniCode,
+                            PublishedPartInfo[PtnLoopCount].type_response);
+      if (Status == EFI_SUCCESS) {
+        PublishType = TRUE;
+      }
+    }
+
+    if (PublishSize) {
+      FastbootPublishVar (PublishedPartInfo[PtnLoopCount].getvar_size_str,
+                              PublishedPartInfo[PtnLoopCount].size_response);
+    } else {
+        DEBUG ((EFI_D_ERROR, "Error Publishing size info for %s partition\n",
+                                                        PartitionNameUniCode));
+        RetStatus = EFI_INVALID_PARAMETER;
+    }
+
+    if (PublishType) {
+      FastbootPublishVar (PublishedPartInfo[PtnLoopCount].getvar_type_str,
+                              PublishedPartInfo[PtnLoopCount].type_response);
+    } else {
+        DEBUG ((EFI_D_ERROR, "Error Publishing type info for %s partition\n",
+                                                        PartitionNameUniCode));
+        RetStatus = EFI_INVALID_PARAMETER;
+    }
+  }
+  return RetStatus;
+}
 
 /* Handle Flash Command */
 STATIC VOID
@@ -1744,6 +2249,86 @@ CmdFlash (IN CONST CHAR8 *arg, IN VOID *data, IN UINT32 sz)
   }
   AsciiStrToUnicodeStr (arg, PartitionName);
 
+#ifdef ASUS_AI2205_BUILD
+  CHAR8 DeviceInfo[MAX_RSP_SIZE];
+
+  if ((!StrnCmp (PartitionName, L"vendor", StrLen (L"vendor")) &&
+       StrnCmp (PartitionName, L"vendor_boot", StrLen (L"vendor_boot"))) ||
+      !StrnCmp (PartitionName, L"system", StrLen (L"system")) ||
+      !StrnCmp (PartitionName, L"system_ext", StrLen (L"system_ext")) ||
+      !StrnCmp (PartitionName, L"odm", StrLen (L"odm")) ||
+      !StrnCmp (PartitionName, L"product", StrLen (L"product"))) {
+        FastbootFail ("Please execute: fastboot reboot fastboot");
+        return;
+  }
+  
+
+  // +++ ASUS_BSP : add for fastboot permission
+  if(!ASUS_FASTBOOT_PERMISSION && (IsRawFlash < 6) && (IsRawFlash_gpt < 6) && !UserFlashPartitionCheck(PartitionName))
+  {
+      if(IsUnlocked() && VerifiedBootPartitionCheck(PartitionName))
+      {
+          DEBUG ((EFI_D_INFO, "[ABL] Only allow flash hlos image in lock state\n"));
+      }else if (IsUnlocked() && !VerifiedBootPartitionCheck(PartitionName))
+      {
+          FastbootFail("Flashing non-hlos image is not allowed in lock state");
+          return;
+      }
+      else
+      {
+          FastbootFail("Flashing is not allowed in Lock State");
+          return;
+      }
+  }
+
+  if (IsAuthorized_2() && VerifiedBootPartitionCheck(PartitionName))
+  {
+      if(!IsAuthorized() && !IsUnlocked() && (IsRawFlash < 6) && (IsRawFlash_gpt < 6))
+      {
+          AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "If flashing un-signed image in lock state,");
+          FastbootInfo(DeviceInfo);
+          WaitForTransferComplete();
+          AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "or flashing boot/dtbo/vendor_boot/system/vendor/super without flashing vbmeta/vbmeta_system,");
+          FastbootInfo(DeviceInfo);
+          WaitForTransferComplete();
+          AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "the device will be unbootable.");
+          FastbootInfo(DeviceInfo);
+          WaitForTransferComplete();
+      }
+  }
+
+  /* Handle ASUS ASDF partition */
+  if (!StrnCmp (PartitionName, L"asdf", StrLen (L"asdf"))) {
+    if(!ASUS_FASTBOOT_PERMISSION && !is_ftm_mode() && !g_allow_flash_and_erase_asdf){
+      DEBUG ((EFI_D_INFO, "[ABL] Skip flashing asdf partition\n"));
+      AsciiSPrint (DeviceInfo, sizeof(DeviceInfo),"");
+      FastbootInfo (DeviceInfo);
+      WaitForTransferComplete();
+      AsciiSPrint (DeviceInfo, sizeof(DeviceInfo),
+                   "ASUS_FASTBOOT_PERMISSION=%a",
+                    ASUS_FASTBOOT_PERMISSION? "TRUE" : "FALSE");
+      FastbootInfo (DeviceInfo);
+      WaitForTransferComplete();
+      AsciiSPrint (DeviceInfo, sizeof(DeviceInfo),
+                   "FTM_MODE=%a",
+                    is_ftm_mode()? "TRUE" : "FALSE");
+      FastbootInfo (DeviceInfo);
+      WaitForTransferComplete();
+      AsciiSPrint (DeviceInfo, sizeof(DeviceInfo),
+                   "ASDF_FLAG=%a",
+                    g_allow_flash_and_erase_asdf? "TRUE" : "FALSE");
+      FastbootInfo (DeviceInfo);
+      WaitForTransferComplete();
+      AsciiSPrint (DeviceInfo, sizeof(DeviceInfo),
+                   "Skip flashing %s partition", PartitionName);
+      FastbootInfo (DeviceInfo);
+      WaitForTransferComplete();
+      FastbootOkay ("");
+      return;
+    }
+  }
+  // --- ASUS_BSP : add for fastboot permission
+#else
   if ((GetAVBVersion () == AVB_LE) ||
       ((GetAVBVersion () != AVB_LE) &&
       (TargetBuildVariantUser ()))) {
@@ -1757,9 +2342,15 @@ CmdFlash (IN CONST CHAR8 *arg, IN VOID *data, IN UINT32 sz)
       return;
     }
   }
+#endif
 
-  if (IsVirtualAbOtaSupported ()) {
+  if (IsDynamicPartitionSupport ()) {
+    /* Virtual A/B is enabled by default.*/
+#ifdef ASUS_BUILD
+    if (CheckVirtualAbCriticalPartition (PartitionName) && !ASUS_FASTBOOT_PERMISSION) {
+#else
     if (CheckVirtualAbCriticalPartition (PartitionName)) {
+#endif
       AsciiSPrint (FlashResultStr, MAX_RSP_SIZE,
                     "Flashing of %s is not allowed in %a state",
                     PartitionName, SnapshotMergeState);
@@ -1796,6 +2387,19 @@ CmdFlash (IN CONST CHAR8 *arg, IN VOID *data, IN UINT32 sz)
     }
     return;
   }
+  
+   /* ASUS BSP: only erase userdata because f2fs format issue */
+#ifdef ASUS_AI2205_BUILD
+  if(!StrnCmp(PartitionName, L"userdata", StrLen(L"userdata"))){
+	DEBUG ((EFI_D_INFO, "only erase userdata because of f2fs format issue.\n"));
+	Status = FastbootErasePartition (PartitionName);
+	if (EFI_ERROR (Status)) {
+	  DEBUG ((EFI_D_ERROR, "erase userdata fail: %r\n", Status));
+	}
+	FastbootOkay("");
+	return;
+  }
+#endif
 
   /* Find the lun number from input string */
   Token = StrStr (PartitionName, L":");
@@ -1813,52 +2417,475 @@ CmdFlash (IN CONST CHAR8 *arg, IN VOID *data, IN UINT32 sz)
     LunSet = TRUE;
   }
 
-  GetRootDeviceType (BootDeviceType, BOOT_DEV_NAME_SIZE_MAX);
+  if (!StrnCmp (PartitionName, L"partition", StrLen (L"partition")))
+  {
+#ifdef ASUS_BUILD
+    // +++ ASUS_BSP : add for ckeck CRC_partiiton:0~6
+    UINT8 *Buffer = NULL;
+    UINT32 temp_crc = 0xFFFFFFFF;
 
-  if ((!StrnCmp (PartitionName, L"partition", StrLen (L"partition"))) ||
-       ((!StrnCmp (PartitionName, L"mibib", StrLen (L"mibib"))) &&
-       (!AsciiStrnCmp (BootDeviceType, "NAND", AsciiStrLen ("NAND"))))) {
-    if (!AsciiStrnCmp (BootDeviceType, "UFS", AsciiStrLen ("UFS"))) {
-      UfsGetSetBootLun (&UfsBootLun, TRUE); /* True = Get */
-      if (UfsBootLun != 0x1) {
-        UfsBootLun = 0x1;
-        UfsGetSetBootLun (&UfsBootLun, FALSE); /* False = Set */
+    g_calculate_gpt0_crc = 0xFFFFFFFF;
+    g_calculate_gpt1_crc = 0xFFFFFFFF;
+    g_calculate_gpt2_crc = 0xFFFFFFFF;
+    g_calculate_gpt3_crc = 0xFFFFFFFF;
+    g_calculate_gpt4_crc = 0xFFFFFFFF;
+    g_calculate_gpt5_crc = 0xFFFFFFFF;
+    g_calculate_gpt6_crc = 0xFFFFFFFF;
+
+    DEBUG((EFI_D_INFO, "[ABL]  CmdFlash - check partition:(%d)\n",sz));
+
+    Buffer = AllocatePages(ALIGN_PAGES(mFlashNumDataBytes, ALIGNMENT_MASK_4KB));
+    memcpy(Buffer, (UINT8*)mFlashDataBuffer, mFlashNumDataBytes);
+
+    Status = CalculateCrc32(Buffer, mFlashNumDataBytes, &temp_crc);
+    DEBUG((EFI_D_INFO, "[ABL]  CmdFlash - calc partition crc = 0x%x \n", temp_crc));
+
+    if (Status == EFI_SUCCESS)
+    {
+      if(!StrnCmp(PartitionName, L"partition:0", StrLen(L"partition:0")))
+      {
+        g_calculate_gpt0_crc = (unsigned int) temp_crc;
+        DEBUG((EFI_D_INFO,  "[ABL]  CmdFlash - g_calculate_gpt0_crc = 0x%x \n", g_calculate_gpt0_crc));
       }
-    } else if (!AsciiStrnCmp (BootDeviceType, "EMMC", AsciiStrLen ("EMMC"))) {
-      Lun = NO_LUN;
-      LunSet = FALSE;
-    }
-    DEBUG ((EFI_D_INFO, "Attemping to update partition table\n"));
-    DEBUG ((EFI_D_INFO, "*************** Current partition Table Dump Start "
-                        "*******************\n"));
-    PartitionDump ();
-    DEBUG ((EFI_D_INFO, "*************** Current partition Table Dump End   "
-                        "*******************\n"));
-    if (!AsciiStrnCmp (BootDeviceType, "NAND", AsciiStrLen ("NAND"))) {
-      Ret = PartitionVerifyMibibImage (mFlashDataBuffer);
-      if (Ret) {
-        FastbootFail ("Error Updating partition Table\n");
-        goto out;
+      else if(!StrnCmp(PartitionName, L"partition:1", StrLen(L"partition:1")))
+      {
+        g_calculate_gpt1_crc = (unsigned int) temp_crc;
+        DEBUG((EFI_D_INFO,  "[ABL]  CmdFlash - g_calculate_gpt1_crc = 0x%x \n", g_calculate_gpt1_crc));
       }
-      Status = HandleRawImgFlash (PartitionName,
-                        ARRAY_SIZE (PartitionName),
-                        mFlashDataBuffer, mFlashNumDataBytes);
+      else if(!StrnCmp(PartitionName, L"partition:2", StrLen(L"partition:2")))
+      {
+        g_calculate_gpt2_crc = (unsigned int) temp_crc;
+        DEBUG((EFI_D_INFO,  "[ABL]  CmdFlash - g_calculate_gpt2_crc = 0x%x \n", g_calculate_gpt2_crc));
+      }
+      else if(!StrnCmp(PartitionName, L"partition:3", StrLen(L"partition:3")))
+      {
+        g_calculate_gpt3_crc = (unsigned int) temp_crc;
+        DEBUG((EFI_D_INFO,  "[ABL]  CmdFlash - g_calculate_gpt3_crc = 0x%x \n", g_calculate_gpt3_crc));
+      }
+      else if(!StrnCmp(PartitionName, L"partition:4", StrLen(L"partition:4")))
+      {
+        g_calculate_gpt4_crc = (unsigned int) temp_crc;
+        DEBUG((EFI_D_INFO,  "[ABL]  CmdFlash - g_calculate_gpt4_crc = 0x%x \n", g_calculate_gpt4_crc));
+      }
+      else if(!StrnCmp(PartitionName, L"partition:5", StrLen(L"partition:5")))
+      {
+        g_calculate_gpt5_crc = (unsigned int) temp_crc;
+        DEBUG((EFI_D_INFO,  "[ABL]  CmdFlash - g_calculate_gpt5_crc = 0x%x \n", g_calculate_gpt5_crc));
+      }
+      else if(!StrnCmp(PartitionName, L"partition:6", StrLen(L"partition:6")))
+      {
+        g_calculate_gpt6_crc = (unsigned int) temp_crc;
+        DEBUG((EFI_D_INFO,  "[ABL]  CmdFlash - g_calculate_gpt6_crc = 0x%x \n", g_calculate_gpt6_crc));
+      }
+      IsRawFlash_gpt++;
     }
-    else {
-      Status = UpdatePartitionTable (mFlashDataBuffer, mFlashNumDataBytes,
-                        Lun, Ptable);
+
+    FreePages(Buffer, ALIGN_PAGES(mFlashNumDataBytes, ALIGNMENT_MASK_4KB));
+    // +++ ASUS_BSP : add for ckeck CRC_partiiton:0~6
+#endif
+
+    GetRootDeviceType (BootDeviceType, BOOT_DEV_NAME_SIZE_MAX);
+
+    if ((!StrnCmp (PartitionName, L"partition", StrLen (L"partition"))) ||
+         ((!StrnCmp (PartitionName, L"mibib", StrLen (L"mibib"))) &&
+         (!AsciiStrnCmp (BootDeviceType, "NAND", AsciiStrLen ("NAND"))))) {
+      if (!AsciiStrnCmp (BootDeviceType, "UFS", AsciiStrLen ("UFS"))) {
+        UfsGetSetBootLun (&UfsBootLun, TRUE); /* True = Get */
+        if (UfsBootLun != 0x1) {
+          UfsBootLun = 0x1;
+          UfsGetSetBootLun (&UfsBootLun, FALSE); /* False = Set */
+        }
+      } else if (!AsciiStrnCmp (BootDeviceType, "EMMC", AsciiStrLen ("EMMC"))) {
+        Lun = NO_LUN;
+        LunSet = FALSE;
+      }
+      DEBUG ((EFI_D_INFO, "Attemping to update partition table\n"));
+      DEBUG ((EFI_D_INFO, "*************** Current partition Table Dump Start "
+                          "*******************\n"));
+      PartitionDump ();
+      DEBUG ((EFI_D_INFO, "*************** Current partition Table Dump End   "
+                          "*******************\n"));
+      if (!AsciiStrnCmp (BootDeviceType, "NAND", AsciiStrLen ("NAND"))) {
+        Ret = PartitionVerifyMibibImage (mFlashDataBuffer);
+        if (Ret) {
+          FastbootFail ("Error Updating partition Table\n");
+          goto out;
+        }
+        Status = HandleRawImgFlash (PartitionName,
+                          ARRAY_SIZE (PartitionName),
+                          mFlashDataBuffer, mFlashNumDataBytes);
+      }
+      else {
+          // +++ ASUS_BSP : add for enable flash raw in slot_b
+#ifdef ASUS_BUILD          
+          if(!StrnCmp (GetCurrentSlotSuffix ().Suffix, L"_b", StrLen (L"_b")) && g_asus_slot_b_enable == TRUE){
+            DEBUG((EFI_D_ERROR, "Enable flash slot_b, skip UpdatePartitionTable\n"));
+          }else{
+            Status = UpdatePartitionTable (mFlashDataBuffer, mFlashNumDataBytes, Lun, Ptable);
+          }
+#else
+          Status = UpdatePartitionTable (mFlashDataBuffer, mFlashNumDataBytes, Lun, Ptable);
+#endif
+          // --- ASUS_BSP : add for enable flash raw in slot_b
+      }
+      /* Signal the Block IO to update and reenumerate the parition table */
+      if (Status == EFI_SUCCESS)  {
+        Status = ReenumeratePartTable ();
+        if (Status == EFI_SUCCESS) {
+#ifdef ASUS_AI2205_BUILD
+          UINT32 PartitionCount = 0;
+          GetPartitionCount (&PartitionCount);
+          Status = PublishGetVarPartitionInfo (PublishedPartInfo, PartitionCount);
+          if (Status != EFI_SUCCESS) {
+            DEBUG ((EFI_D_ERROR, "Failed to publish part info for all partitions\n"));
+            FastbootFail ("Error Updating partition Table\n");
+            goto out;
+          } else {
+            FastbootOkay ("");
+            goto out;
+          }
+#else
+          FastbootOkay ("");
+          goto out;
+#endif
+        }
+      }
+      FastbootFail ("Error Updating partition Table\n");
+      goto out;
     }
-    /* Signal the Block IO to update and reenumerate the parition table */
-    if (Status == EFI_SUCCESS)  {
-      Status = ReenumeratePartTable ();
-      if (Status == EFI_SUCCESS) {
-        FastbootOkay ("");
-        goto out;
+  }
+
+#ifdef ASUS_BUILD
+  // +++ ASUS_BSP : add for FRP unlock
+  if (!StrnCmp(PartitionName, L"sha256", StrLen(PartitionName))){
+    DEBUG((EFI_D_INFO, "[ABL]  +++ CmdFlash : sha256 data (%d)\n",sz));
+
+#if 0
+    UINT32 i=0;
+    DEBUG((EFI_D_INFO, "[ABL] mDataBuffer[%d] = \n",sz));
+    for(i=0;i<sz;i++)
+    {
+      DEBUG((EFI_D_INFO, " %02x",mFlashDataBuffer[i] ));
+    }
+    DEBUG((EFI_D_INFO, "\n"));
+#endif
+
+    CmdOemSha256(NULL, (VOID *) mFlashDataBuffer, mFlashNumDataBytes);
+
+    DEBUG((EFI_D_INFO, "[ABL]  --- CmdFlash : sha256 data\n"));
+    FastbootOkay("");
+
+    return;
+  }
+
+  if (!StrnCmp(PartitionName, L"sig", StrLen(PartitionName))){
+    EFI_STATUS Status = EFI_SUCCESS;
+
+    CHAR8 SSN[16]={0};  // Read SSN
+    UINT8 SIG[SIGNATURE_LEN];
+    size_t SSN_size = 0;
+
+#if 1
+    // 1 Get SN
+    GetSSNNum(SSN, sizeof(SSN));
+    SSN_size = strlen(SSN);
+    DEBUG((EFI_D_ERROR, "[ABL] +++ FRP_UNLOCK(SSN=%a),size=%d\n",SSN,SSN_size));
+
+#else	//test SSN
+    AsciiSPrint(SSN, sizeof(SSN), "%a", "G6AZCY03S376EYA");
+    DEBUG((EFI_D_ERROR, "[ABL]  +++ FRP_UNLOCK(SSN=%a)\n",SSN));
+#endif
+
+    UINT8 hash[32] = {0};
+    memset(hash,0,sizeof(hash));
+
+    Status = get_image_hash((UINT8*)SSN,SSN_size,hash,sizeof(hash),VB_SHA256);
+
+    if (Status != EFI_SUCCESS)
+    {
+      DEBUG((EFI_D_ERROR, "[ABL] (ERROR) get_image_hash : FAIL (%d)\n", Status));
+      FastbootFail("SHA256 : FAIL");
+      return;
+    }
+
+    // Following RFC3447, SHA256 value begins at byte 19,
+    // http://www.ietf.org/rfc/rfc3447.txt
+    //MD2:	 (0x)30 20 30 0c 06 08 2a 86 48 86 f7 0d 02 02 05 00 04
+    //			  10 || H.
+    //MD5:	 (0x)30 20 30 0c 06 08 2a 86 48 86 f7 0d 02 05 05 00 04
+    //			  10 || H.
+    //SHA-1:	 (0x)30 21 30 09 06 05 2b 0e 03 02 1a 05 00 04 14 || H.
+    //SHA-256: (0x)30 31 30 0d 06 09 60 86 48 01 65 03 04 02 01 05 00
+    //			  04 20 || H.
+    //SHA-384: (0x)30 41 30 0d 06 09 60 86 48 01 65 03 04 02 02 05 00
+    //			  04 30 || H.
+    //SHA-512: (0x)30 51 30 0d 06 09 60 86 48 01 65 03 04 02 03 05 00
+    //				 04 40 || H.
+
+    UINT8 sha256_header[19] = {0x30,0x31,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,
+                               0x65,0x03,0x04,0x02,0x01,0x05,0x00,0x04,0x20};
+    UINT8 sha256_buf[51] = {0};
+
+    memset(sha256_buf,0,sizeof(sha256_buf));
+    memcpy(sha256_buf,sha256_header,19);
+    memcpy(&sha256_buf[19],hash,sizeof(hash));
+
+#if 0
+    UINT32 i=0;
+    UINT32 size=51;
+
+    DEBUG((EFI_D_ERROR, "\n"));
+    DEBUG((EFI_D_ERROR, "[ABL] FRP_UNLOCK[%d] = \n",size));
+    for(i=0;i<size;i++)
+    {
+      DEBUG((EFI_D_ERROR, " %02x",sha256_buf[i] ));
+    }
+    DEBUG((EFI_D_ERROR, "\n"));
+#endif
+
+    // 2. Get signature from asuskey partition
+    memset(SIG,0,sizeof(SIG));
+    memcpy(SIG,mFlashDataBuffer,sizeof(SIG));
+
+#if 0
+    UINT32 i=0;
+    DEBUG((EFI_D_INFO, "[ABL] SIG[%d] = \n",sz));
+    for(i=0;i<sz;i++)
+    {
+      DEBUG((EFI_D_INFO, " %02x",SIG[i] ));
+    }
+    DEBUG((EFI_D_INFO, "\n"));
+#endif
+
+    // 3. RSA Verify
+    Status = SecRSATestAppMain(SIG,sizeof(SIG),(UINT8*)sha256_buf,sizeof(sha256_buf),FRP_UNLOCK);
+    if (Status == EFI_SUCCESS)
+    {
+      // 4. erase FRP partition
+      Status = erase_frp_partition();
+      if (Status == EFI_SUCCESS)
+      {
+        FastbootOkay("");
+        return;
+      }
+      else
+      {
+        FastbootFail("erase frp Failed!!");
+        return;
       }
     }
-    FastbootFail ("Error Updating partition Table\n");
+    else
+    {
+      FastbootFail("Verify FRP Unlock Signature Failed!!");
+      return;
+    }
+    DEBUG((EFI_D_ERROR, "[ABL] --- FRP_UNLOCK(SSN=%a)\n",SSN));
+  }
+  // --- ASUS_BSP : add for FRP unlock
+
+  // +++ ASUS_BSP : add for ASUS dongle unlock
+  if (!StrnCmp(PartitionName, L"asuskey2", StrLen(L"asuskey2")))
+  {
+    DEBUG((EFI_D_INFO, "[ABL]  +++ CmdFlash : receive asuskey2 data (%d)\n", StrLen(PartitionName)));
+
+    memset(mmc_hash_buf, 0, sizeof(mmc_hash_buf));
+    memcpy(mmc_hash_buf, (char*)mFlashDataBuffer, sizeof(mmc_hash_buf) - 1);
+    DEBUG((EFI_D_INFO, "[ABL] mmc_hash_buf = %a\n", mmc_hash_buf));
+
+    #if 0
+    UINT32 i=0;
+    DEBUG((EFI_D_INFO, "[ABL] mmc_hash_buf[%d] = \n",sz));
+    for(i=0;i<sz;i++)
+    {
+    DEBUG((EFI_D_INFO, " %x",mmc_hash_buf[i] ));
+    }
+    DEBUG((EFI_D_INFO, "\n"));
+    #endif
+
+    DEBUG((EFI_D_INFO, "[ABL]  --- CmdFlash : receive asuskey2 data\n"));
+    FastbootOkay("");
     goto out;
   }
+  // --- ASUS_BSP : add for ASUS dongle unlock
+
+  if (!StrnCmp(PartitionName, L"frp", StrLen(L"frp"))){
+    DEBUG((EFI_D_INFO, "[ABL]  +++ CmdFlash : want flash frp\n"));
+    if(!ASUS_FASTBOOT_PERMISSION && !is_ftm_mode()){
+        FastbootFail("Can not flash frp");
+        goto out;
+    }
+  }
+
+  if (!StrnCmp(PartitionName, L"CRC", StrLen(PartitionName)))
+  {
+    DEBUG((EFI_D_INFO, "[ABL]  CmdFlash : check CRC\n"));
+    char crc_ptr[8]={0};
+
+    DEBUG((EFI_D_INFO, "[ABL]  data = 0x%x\n", &mFlashDataBuffer));
+    memcpy(crc_ptr, (char*)mFlashDataBuffer, 8);
+
+    g_flash_crc =  GET_LWORD_FROM_BYTE(crc_ptr);
+    DEBUG((EFI_D_INFO, "[ABL]  CmdFlash : get flash CRC = 0x%x\n", g_flash_crc));
+
+    FastbootOkay("");
+    goto out;
+  }
+
+  if(!StrnCmp(PartitionName, L"CRC_", StrLen(L"CRC_")))
+  {
+    char crc_ptr[8]={0};
+    CHAR16* pt_name=NULL;
+    pt_name=(CHAR16 *)(PartitionName);
+    pt_name+=4;
+
+    DEBUG((EFI_D_INFO, "[ABL]  CmdFlash : check (%s) partition\n", pt_name));
+    DEBUG((EFI_D_INFO, "[ABL]  CmdFlash : data = 0x%x\n", mFlashDataBuffer));
+    memcpy(crc_ptr,(char*)mFlashDataBuffer, 8);
+
+    g_flash_crc =  GET_LWORD_FROM_BYTE(mFlashDataBuffer);
+    DEBUG((EFI_D_INFO, "[ABL]  CmdFlash : get flash CRC = 0x%x\n", g_flash_crc));
+
+    if(!StrnCmp(pt_name, L"super", StrLen(L"super")))
+    {
+      IsRawFlash = 0;
+      IsRawFlash_gpt = 0;
+    }
+
+    // +++ ASUS_BSP : add for ckeck CRC_partiiton:0~6
+    if((!StrnCmp(pt_name, L"partition:", StrLen(L"partition:"))) )
+    {
+      DEBUG((EFI_D_INFO, "[ABL]  CmdFlash : check CRC_(%s) from DDR = 0x%x\n", pt_name));
+
+      if(!StrnCmp(pt_name, L"partition:0", StrLen(L"partition:0")))
+      {
+        if(g_calculate_gpt0_crc != g_flash_crc)
+        {
+          DEBUG((EFI_D_INFO, "[ABL]  Calculate DDR CRC (0x%x) != RAW CRC (0x%x)", g_calculate_gpt0_crc, g_flash_crc));
+          IsRawFlash = 0;
+          FastbootFail("GPT0 CRC ERROR");
+          goto out;
+        }
+      }
+      else if(!StrnCmp(pt_name, L"partition:1", StrLen(L"partition:1")))
+      {
+        if(g_calculate_gpt1_crc != g_flash_crc)
+        {
+          DEBUG((EFI_D_INFO, "[ABL]  Calculate DDR CRC (0x%x) != RAW CRC (0x%x)", g_calculate_gpt1_crc, g_flash_crc));
+          IsRawFlash = 0;
+          FastbootFail("GPT1 CRC ERROR");
+          goto out;
+        }
+      }
+      else if(!StrnCmp(pt_name, L"partition:2", StrLen(L"partition:2")))
+      {
+        if(g_calculate_gpt2_crc != g_flash_crc)
+        {
+          DEBUG((EFI_D_INFO, "[ABL]  Calculate DDR CRC (0x%x) != RAW CRC (0x%x)", g_calculate_gpt2_crc, g_flash_crc));
+          IsRawFlash = 0;
+          FastbootFail("GPT2 CRC ERROR");
+          goto out;
+        }
+      }
+      else if(!StrnCmp(pt_name, L"partition:3", StrLen(L"partition:3")))
+      {
+        if(g_calculate_gpt3_crc != g_flash_crc)
+        {
+          DEBUG((EFI_D_INFO, "[ABL]  Calculate DDR CRC (0x%x) != RAW CRC (0x%x)", g_calculate_gpt3_crc, g_flash_crc));
+          IsRawFlash = 0;
+          FastbootFail("GPT3 CRC ERROR");
+          goto out;
+        }
+      }
+      else if(!StrnCmp(pt_name, L"partition:4", StrLen(L"partition:4")))
+      {
+        if(g_calculate_gpt4_crc != g_flash_crc)
+        {
+          DEBUG((EFI_D_INFO, "[ABL]  Calculate DDR CRC (0x%x) != RAW CRC (0x%x)", g_calculate_gpt4_crc, g_flash_crc));
+          IsRawFlash = 0;
+          FastbootFail("GPT4 CRC ERROR");
+          goto out;
+        }
+      }
+      else if(!StrnCmp(pt_name, L"partition:5", StrLen(L"partition:5")))
+      {
+        if(g_calculate_gpt5_crc != g_flash_crc)
+        {
+          DEBUG((EFI_D_INFO, "[ABL]  Calculate DDR CRC (0x%x) != RAW CRC (0x%x)", g_calculate_gpt5_crc, g_flash_crc));
+          IsRawFlash = 0;
+          FastbootFail("GPT5 CRC ERROR");
+          goto out;
+        }
+      }
+      else if(!StrnCmp(pt_name, L"partition:6", StrLen(L"partition:6")))
+      {
+        if(g_calculate_gpt6_crc != g_flash_crc)
+        {
+          DEBUG((EFI_D_INFO, "[ABL]  Calculate DDR CRC (0x%x) != RAW CRC (0x%x)", g_calculate_gpt6_crc, g_flash_crc));
+          IsRawFlash = 0;
+          FastbootFail("GPT6 CRC ERROR");
+          goto out;
+        }
+      }
+
+      IsRawFlash++;
+      if(IsRawFlash == 7 && IsRawFlash_gpt == 7){
+          IsASUSRawFlash = TRUE;
+          //Set DM verity to enforcing during raw flash
+          EnableEnforcingMode (TRUE);
+          //This clears the persistent property.
+          WritePersistentValue ((const uint8_t *)AVB_NPV_MANAGED_VERITY_MODE, AsciiStrLen(AVB_NPV_MANAGED_VERITY_MODE),0,0);
+      }
+      FastbootOkay("");
+      goto out;
+
+    }
+    // --- ASUS_BSP : add for ckeck CRC_partiiton:0~6
+
+    else if (PartitionHasMultiSlot (pt_name))
+    {
+      if(!StrnCmp (GetCurrentSlotSuffix ().Suffix, L"_a", StrLen (L"_a")))
+      {
+        StrCat (pt_name, L"_a");
+        g_calculate_crc = AsusCalculatePtCrc32(pt_name);
+      }else
+      {
+        StrCat (pt_name, L"_b");
+        g_calculate_crc = AsusCalculatePtCrc32(pt_name);
+      }
+      }else
+      {
+        g_calculate_crc = AsusCalculatePtCrc32(pt_name);
+      }
+
+      DEBUG((EFI_D_INFO, "[ABL]  g_calculate_crc = 0x%x ; g_flash_crc = 0x%x\n", g_calculate_crc, g_flash_crc));
+      if(g_calculate_crc != g_flash_crc)
+      {
+        DEBUG((EFI_D_INFO, "[ABL]  Calculate CRC (0x%x) != RAW CRC (0x%x)", g_calculate_crc, g_flash_crc));
+
+        FastbootFail("CRC ERROR");
+        g_calculate_crc = 0xFFFFFFFF;
+        g_flash_crc = 0xFFFFFFFF;
+        IsRawFlash = 0;
+        IsRawFlash_gpt = 0;
+        goto out;
+      }
+
+      g_calculate_crc = 0xFFFFFFFF;
+      g_flash_crc = 0xFFFFFFFF;
+
+      FastbootOkay("");
+      goto out;
+  }
+
+  if(!StrnCmp(PartitionName, L"signature", StrLen(L"signature")))
+  {
+      //DEBUG ((EFI_D_ERROR, "[ABL] Attemping to flash signature\n"));
+      //DEBUG ((EFI_D_ERROR, "[ABL] Set check_raw_flash = TRUE\n"));
+      //check_raw_flash = TRUE;
+      FastbootOkay("");
+      goto out;
+  }
+#endif // #ifdef ASUS_BUILD
 
   sparse_header = (sparse_header_t *)mFlashDataBuffer;
   meta_header = (meta_header_t *)mFlashDataBuffer;
@@ -2016,6 +3043,65 @@ CmdErase (IN CONST CHAR8 *arg, IN VOID *data, IN UINT32 sz)
   }
   AsciiStrToUnicodeStr (arg, PartitionName);
 
+#ifdef ASUS_AI2205_BUILD
+  // +++ ASUS_BSP : add for fastboot permission
+  if(!ASUS_FASTBOOT_PERMISSION && !UserErasePartitionCheck(PartitionName))
+  {
+    if(IsUnlocked() && VerifiedBootPartitionCheck(PartitionName))
+    {
+        DEBUG ((EFI_D_INFO, "[ABL] Only allow erase hlos image in lock state\n"));
+    }else if (IsUnlocked() && !VerifiedBootPartitionCheck(PartitionName))
+    {
+        FastbootFail("Eraseing non-hlos image is not allowed in lock state");
+        return;
+    }
+    else
+    {
+        FastbootFail("Eraseing is not allowed in Lock State");
+        return;
+    }
+  }
+  
+  /* MISC parttion erase permission check */
+  if(!StrnCmp (PartitionName, L"misc", StrLen (L"misc"))){
+	  if(!ASUS_FASTBOOT_PERMISSION && (!IsASUSRawFlash)){
+		  FastbootFail("Erasing misc is not allowed in Lock State");
+          return;
+	  }
+  }
+
+  /* Handle ASUS ASDF partition */
+  if (!StrnCmp (PartitionName, L"asdf", StrLen (L"asdf"))) {
+    if(!ASUS_FASTBOOT_PERMISSION && !is_ftm_mode() && !g_allow_flash_and_erase_asdf){
+      DEBUG ((EFI_D_INFO, "[ABL] Skip erasing asdf partition\n"));
+      AsciiSPrint (EraseResultStr, sizeof(EraseResultStr),"");
+      FastbootInfo (EraseResultStr);
+      WaitForTransferComplete();
+      AsciiSPrint (EraseResultStr, sizeof(EraseResultStr),
+                   "ASUS_FASTBOOT_PERMISSION=%a",
+                    ASUS_FASTBOOT_PERMISSION? "TRUE" : "FALSE");
+      FastbootInfo (EraseResultStr);
+      WaitForTransferComplete();
+      AsciiSPrint (EraseResultStr, sizeof(EraseResultStr),
+                   "FTM_MODE=%a",
+                    is_ftm_mode()? "TRUE" : "FALSE");
+      FastbootInfo (EraseResultStr);
+      WaitForTransferComplete();
+      AsciiSPrint (EraseResultStr, sizeof(EraseResultStr),
+                   "ASDF_FLAG=%a",
+                    g_allow_flash_and_erase_asdf? "TRUE" : "FALSE");
+      FastbootInfo (EraseResultStr);
+      WaitForTransferComplete();
+      AsciiSPrint (EraseResultStr, sizeof(EraseResultStr),
+                   "Skip erasing %s partition", PartitionName);
+      FastbootInfo (EraseResultStr);
+      WaitForTransferComplete();
+      FastbootOkay ("");
+      return;
+    }
+  }
+
+#else
 
   if ((GetAVBVersion () == AVB_LE) ||
       ((GetAVBVersion () != AVB_LE) &&
@@ -2030,9 +3116,15 @@ CmdErase (IN CONST CHAR8 *arg, IN VOID *data, IN UINT32 sz)
       return;
     }
   }
+#endif
 
-  if (IsVirtualAbOtaSupported ()) {
+  if (IsDynamicPartitionSupport ()) {
+    /* Virtual A/B feature is enabled by default. */
+#ifdef ASUS_BUILD
+    if (CheckVirtualAbCriticalPartition (PartitionName) && !ASUS_FASTBOOT_PERMISSION) {
+#else
     if (CheckVirtualAbCriticalPartition (PartitionName)) {
+#endif
       AsciiSPrint (EraseResultStr, MAX_RSP_SIZE,
                     "Erase of %s is not allowed in %a state",
                     PartitionName, SnapshotMergeState);
@@ -2117,10 +3209,18 @@ CmdSetActive (CONST CHAR8 *Arg, VOID *Data, UINT32 Size)
   Slot NewSlot = {{0}};
   EFI_STATUS Status;
 
+#ifdef ASUS_BUILD
+  if(TargetBuildVariantUser () && !ASUS_FASTBOOT_PERMISSION)
+  {
+    FastbootFail("Slot Change is not allowed in Lock State\n");
+    return;
+  }
+#else
   if (TargetBuildVariantUser () && !IsUnlocked ()) {
     FastbootFail ("Slot Change is not allowed in Lock State\n");
     return;
   }
+#endif
 
   if (!MultiSlotBoot) {
     FastbootFail ("This Command not supported");
@@ -2132,8 +3232,13 @@ CmdSetActive (CONST CHAR8 *Arg, VOID *Data, UINT32 Size)
     return;
   }
 
-  if (IsVirtualAbOtaSupported ()) {
+  if (IsDynamicPartitionSupport ()) {
+    /* Virtual A/B feature is enabled by default.*/
+#ifdef ASUS_BUILD
+    if (GetSnapshotMergeStatus () == MERGING && !ASUS_FASTBOOT_PERMISSION) {
+#else
     if (GetSnapshotMergeStatus () == MERGING) {
+#endif
       FastbootFail ("Slot Change is not allowed in merging state");
       return;
     }
@@ -2603,7 +3708,6 @@ CmdReboot (IN CONST CHAR8 *arg, IN VOID *data, IN UINT32 sz)
   FastbootFail ("Failed to reboot");
 }
 
-#if DYNAMIC_PARTITION_SUPPORT
 STATIC VOID
 CmdRebootRecovery (IN CONST CHAR8 *Arg, IN VOID *Data, IN UINT32 Size)
 {
@@ -2641,7 +3745,6 @@ CmdRebootFastboot (IN CONST CHAR8 *Arg, IN VOID *Data, IN UINT32 Size)
   FastbootFail ("Failed to reboot");
 }
 
-#ifdef VIRTUAL_AB_OTA
 STATIC VOID
 CmdUpdateSnapshot (IN CONST CHAR8 *Arg, IN VOID *Data, IN UINT32 Size)
 {
@@ -2660,7 +3763,11 @@ CmdUpdateSnapshot (IN CONST CHAR8 *Arg, IN VOID *Data, IN UINT32 Size)
       FastbootOkay ("");
       return;
     } else if (!AsciiStrnCmp (Command, "cancel", AsciiStrLen ("cancel"))) {
+#ifdef ASUS_BUILD
+      if(!ASUS_FASTBOOT_PERMISSION) {
+#else
       if (!IsUnlocked ()) {
+#endif
         FastbootFail ("Snapshot Cancel is not allowed in Lock State");
         return;
       }
@@ -2682,8 +3789,6 @@ CmdUpdateSnapshot (IN CONST CHAR8 *Arg, IN VOID *Data, IN UINT32 Size)
   FastbootFail ("Invalid snapshot-update command");
   return;
 }
-#endif
-#endif
 
 STATIC VOID
 CmdContinue (IN CONST CHAR8 *Arg, IN VOID *Data, IN UINT32 Size)
@@ -2693,7 +3798,7 @@ CmdContinue (IN CONST CHAR8 *Arg, IN VOID *Data, IN UINT32 Size)
   BootInfo Info = {0};
 
   Info.MultiSlotBoot = PartitionHasMultiSlot ((CONST CHAR16 *)L"boot");
-  Status = LoadImageAndAuth (&Info);
+  Status = LoadImageAndAuth (&Info, FALSE, FALSE);
   if (Status != EFI_SUCCESS) {
     AsciiSPrint (Resp, sizeof (Resp), "Failed to load image from partition: %r",
                  Status);
@@ -2725,26 +3830,6 @@ STATIC VOID UpdateGetVarVariable (VOID)
                IsChargingScreenEnable ());
   AsciiSPrint (OffModeCharge, sizeof (OffModeCharge), "%d",
                IsChargingScreenEnable ());
-}
-
-STATIC VOID WaitForTransferComplete (VOID)
-{
-  USB_DEVICE_EVENT Msg;
-  USB_DEVICE_EVENT_DATA Payload;
-  UINTN PayloadSize;
-
-  /* Wait for the transfer to complete */
-  while (1) {
-    GetFastbootDeviceData ()->UsbDeviceProtocol->HandleEvent (&Msg,
-            &PayloadSize, &Payload);
-    if (UsbDeviceEventTransferNotification == Msg) {
-      if (1 == USB_INDEX_TO_EP (Payload.TransferOutcome.EndpointIndex)) {
-        if (USB_ENDPOINT_DIRECTION_IN ==
-            USB_INDEX_TO_EPDIR (Payload.TransferOutcome.EndpointIndex))
-          break;
-      }
-    }
-  }
 }
 
 STATIC VOID CmdGetVarAll (VOID)
@@ -2875,7 +3960,7 @@ CmdBoot (CONST CHAR8 *Arg, VOID *Data, UINT32 Size)
     }
   }
 
-  Status = LoadImageAndAuth (&Info);
+  Status = LoadImageAndAuth (&Info, FALSE, FALSE);
   if (Status != EFI_SUCCESS) {
     AsciiSPrint (Resp, sizeof (Resp),
                  "Failed to load/authenticate boot image: %r", Status);
@@ -2919,6 +4004,7 @@ CmdRebootBootloader (CONST CHAR8 *arg, VOID *data, UINT32 sz)
   FastbootFail ("Failed to reboot");
 }
 
+#ifndef ASUS_BUILD
 #if (defined(ENABLE_DEVICE_CRITICAL_LOCK_UNLOCK_CMDS) ||                       \
      defined(ENABLE_UPDATE_PARTITIONS_CMDS))
 STATIC UINT8
@@ -2997,18 +4083,73 @@ SetDeviceUnlock (UINT32 Type, BOOLEAN State)
   }
 }
 #endif
+#endif
 
 #ifdef ENABLE_UPDATE_PARTITIONS_CMDS
 STATIC VOID
 CmdFlashingUnlock (CONST CHAR8 *arg, VOID *data, UINT32 sz)
 {
+#ifdef ASUS_BUILD
+
+  // +++ ASUS_BSP : add for fastboot permission
+  if(!ASUS_FASTBOOT_PERMISSION)
+  {
+    FastbootFail("permission denied");
+    return;
+  }
+  // --- ASUS_BSP : add for fastboot permission
+
+  if(IsUnlocked() == TRUE)
+  {
+    FastbootFail("Device already : unlocked!");
+    return;
+  }
+
+  SetDeviceUnlockValue (UNLOCK, TRUE);
+  FastbootOkay("");
+  if (IsAuthorized() && !IsAuthorized_2()){
+    RebootDevice(RECOVERY_MODE);
+  }
+
+#else
   SetDeviceUnlock (UNLOCK, TRUE);
+#endif
 }
 
 STATIC VOID
 CmdFlashingLock (CONST CHAR8 *arg, VOID *data, UINT32 sz)
 {
+#ifdef ASUS_BUILD
+  UINT32 lock_count;
+
+  // +++ ASUS_BSP : add for fastboot permission
+  if(!ASUS_FASTBOOT_PERMISSION)
+  {
+    FastbootFail("permission denied");
+    return;
+  }
+  // --- ASUS_BSP : add for fastboot permission
+
+  if( IsUnlocked() == FALSE)
+  {
+    FastbootFail("Device already : locked!");
+    return;
+  }
+
+  SetDeviceUnlockValue (UNLOCK, FALSE);
+
+  lock_count = GetLockCounter();
+  lock_count++;
+  SetLockCounter(lock_count);
+
+  FastbootOkay("");
+  if (IsAuthorized() && !IsAuthorized_2()){
+    RebootDevice(RECOVERY_MODE);
+  }
+
+#else
   SetDeviceUnlock (UNLOCK, FALSE);
+#endif
 }
 #endif
 
@@ -3016,13 +4157,61 @@ CmdFlashingLock (CONST CHAR8 *arg, VOID *data, UINT32 sz)
 STATIC VOID
 CmdFlashingLockCritical (CONST CHAR8 *arg, VOID *data, UINT32 sz)
 {
+#ifdef ASUS_BUILD
+
+  // +++ ASUS_BSP : add for fastboot permission
+  if(!ASUS_FASTBOOT_PERMISSION)
+  {
+    FastbootFail("permission denied");
+    return;
+  }
+  // --- ASUS_BSP : add for fastboot permission
+
+  if( IsUnlockCritical() == FALSE)
+  {
+    FastbootFail("Device already : locked!");
+    return;
+  }
+  
+  SetDeviceUnlockValue (UNLOCK_CRITICAL, FALSE);
+  FastbootOkay("");
+  if (IsAuthorized() && !IsAuthorized_2()){
+    RebootDevice(RECOVERY_MODE);
+  }
+
+#else
   SetDeviceUnlock (UNLOCK_CRITICAL, FALSE);
+#endif
 }
 
 STATIC VOID
 CmdFlashingUnLockCritical (CONST CHAR8 *arg, VOID *data, UINT32 sz)
 {
+#ifdef ASUS_BUILD
+
+  // +++ ASUS_BSP : add for fastboot permission
+  if(!ASUS_FASTBOOT_PERMISSION)
+  {
+    FastbootFail("permission denied");
+    return;
+  }
+  // --- ASUS_BSP : add for fastboot permission
+
+  if( IsUnlockCritical() == TRUE)
+  {
+    FastbootFail("Device already : unlocked!");
+    return;
+  }
+
+  SetDeviceUnlockValue (UNLOCK_CRITICAL, TRUE);
+  FastbootOkay("");
+  if (IsAuthorized() && !IsAuthorized_2()){
+    RebootDevice(RECOVERY_MODE);
+  }
+
+#else
   SetDeviceUnlock (UNLOCK_CRITICAL, TRUE);
+#endif
 }
 #endif
 
@@ -3030,6 +4219,17 @@ STATIC VOID
 CmdOemEnableChargerScreen (CONST CHAR8 *Arg, VOID *Data, UINT32 Size)
 {
   EFI_STATUS Status;
+
+#ifdef ASUS_BUILD
+  // +++ ASUS_BSP : add for fastboot permission
+  if(!ASUS_FASTBOOT_PERMISSION && !IsUnlocked())
+  {
+    FastbootFail("permission denied");
+    return;
+  }
+  // --- ASUS_BSP : add for fastboot permission
+#endif
+
   DEBUG ((EFI_D_INFO, "Enabling Charger Screen\n"));
 
   Status = EnableChargingScreen (TRUE);
@@ -3044,6 +4244,17 @@ STATIC VOID
 CmdOemDisableChargerScreen (CONST CHAR8 *Arg, VOID *Data, UINT32 Size)
 {
   EFI_STATUS Status;
+
+#ifdef ASUS_BUILD
+  // +++ ASUS_BSP : add for fastboot permission
+  if(!ASUS_FASTBOOT_PERMISSION && !IsUnlocked())
+  {
+    FastbootFail("permission denied");
+    return;
+  }
+  // --- ASUS_BSP : add for fastboot permission
+#endif
+
   DEBUG ((EFI_D_INFO, "Disabling Charger Screen\n"));
 
   Status = EnableChargingScreen (FALSE);
@@ -3062,6 +4273,16 @@ CmdOemOffModeCharger (CONST CHAR8 *Arg, VOID *Data, UINT32 Size)
   EFI_STATUS Status;
   BOOLEAN IsEnable = FALSE;
   CHAR8 Resp[MAX_RSP_SIZE] = "Set off mode charger: ";
+
+#ifdef ASUS_BUILD
+  // +++ ASUS_BSP : add for fastboot permission
+  if(!ASUS_FASTBOOT_PERMISSION && !IsUnlocked())
+  {
+    FastbootFail("permission denied");
+    return;
+  }
+  // --- ASUS_BSP : add for fastboot permission
+#endif
 
   if (Arg) {
     Ptr = AsciiStrStr (Arg, Delim);
@@ -3187,6 +4408,45 @@ DisplayGetVariable (CHAR16 *VariableName, VOID *VariableValue, UINTN *DataSize)
 }
 
 STATIC VOID
+CmdOemSetHwFenceValue (CONST CHAR8 *arg, VOID *data, UINT32 Size)
+{
+  EFI_STATUS Status;
+  CHAR8 Resp[MAX_RSP_SIZE] = "Set HW fence value: ";
+  CHAR8 HwFenceValue[MAX_DISPLAY_PANEL_OVERRIDE] = " msm_hw_fence.enable=";
+  INTN Pos = 0;
+
+  for (Pos = 0; Pos < AsciiStrLen (arg); Pos++) {
+    if (arg[Pos] == ' ') {
+      arg++;
+      Pos--;
+    } else {
+      break;
+    }
+  }
+
+  AsciiStrnCatS (HwFenceValue,
+                 MAX_DISPLAY_PANEL_OVERRIDE,
+                 arg,
+                 AsciiStrLen (arg));
+
+  Status = gRT->SetVariable ((CHAR16 *)L"HwFenceConfiguration",
+                               &gQcomTokenSpaceGuid,
+                               EFI_VARIABLE_RUNTIME_ACCESS |
+                               EFI_VARIABLE_BOOTSERVICE_ACCESS |
+                               EFI_VARIABLE_NON_VOLATILE,
+                               AsciiStrLen (HwFenceValue),
+                               (VOID *)HwFenceValue);
+
+  if (EFI_ERROR (Status)) {
+    AsciiStrnCatS (Resp, sizeof (Resp), ": failed!", AsciiStrLen (": failed!"));
+    FastbootFail (Resp);
+  } else {
+    AsciiStrnCatS (Resp, sizeof (Resp), ": done", AsciiStrLen (": done"));
+    FastbootOkay (Resp);
+  }
+}
+
+STATIC VOID
 CmdOemSelectDisplayPanel (CONST CHAR8 *arg, VOID *data, UINT32 sz)
 {
   EFI_STATUS Status;
@@ -3261,10 +4521,81 @@ CmdFlashingGetUnlockAbility (CONST CHAR8 *arg, VOID *data, UINT32 sz)
 }
 #endif
 
+#ifdef ASUS_BUILD
+// +++ ASUS_BSP : add for check_unbootable
+int check_unbootable(int i, int j)
+{
+  EFI_PARTITION_ENTRY *PartEntry;
+  UINT32 Unbootable_Value=0;
+  EFI_STATUS Status;
+
+  UpdatePartitionEntries();
+
+  Status = gBS->HandleProtocol(Ptable[i].HandleInfoList[j].Handle, &gEfiPartitionRecordGuid, (VOID **)&PartEntry);
+  if (EFI_SUCCESS != Status) {
+    DEBUG ((EFI_D_INFO, "[ABL] check_unbootable: HandleProtocol gEfiPartitionRecordGuid failed, status = %r\n", Status));
+  }
+  Unbootable_Value= (PartEntry->Attributes & PART_ATT_UNBOOTABLE_VAL) >> PART_ATT_UNBOOTABLE_BIT;
+
+  return Unbootable_Value;
+}
+// --- ASUS_BSP : add for check_unbootable
+#endif
+
+#if HIBERNATION_SUPPORT_NO_AES
+STATIC VOID
+CmdGoldenSnapshot (CONST CHAR8 *Arg, VOID *Data, UINT32 Size)
+{
+  EFI_STATUS Status;
+  CHAR8 *Ptr = NULL;
+  CONST CHAR8 *Delim = " ";
+
+  if (Arg) {
+    /* Expect a string "enable" or "disable" */
+    if (((AsciiStrLen (Arg)) < 7)
+        ||
+        ((AsciiStrLen (Arg)) > 8) ) {
+      FastbootFail ("Invalid input entered");
+      return;
+    }
+    Ptr = AsciiStrStr (Arg, Delim);
+    Ptr++;
+  } else {
+    FastbootFail ("Invalid input entered");
+    return;
+  }
+
+  if (!AsciiStrCmp (Ptr, "enable")) {
+    /* Set a magic value 200 to denote if it is golden image */
+    Status = SetSnapshotGolden (200);
+  }
+  else if (!AsciiStrCmp (Ptr, "disable")) {
+    Status = SetSnapshotGolden (0);
+  }
+  else {
+    FastbootFail ("Invalid input entered");
+    return;
+  }
+
+  if (Status != EFI_SUCCESS) {
+    FastbootFail ("Failed to update golden-snapshot flag");
+  }
+  else {
+    FastbootOkay ("Golden-snapshot flag updated");
+  }
+   return;
+}
+#endif
+
 STATIC VOID
 CmdOemDevinfo (CONST CHAR8 *arg, VOID *data, UINT32 sz)
 {
   CHAR8 DeviceInfo[MAX_RSP_SIZE];
+#ifdef ASUS_BUILD
+  CHAR8 TempChar[MAX_RSP_SIZE];
+  UINT32 TempNum;
+//  VirtualAbMergeStatus SnapshotMergeStatus;
+#endif
 
   AsciiSPrint (DeviceInfo, sizeof (DeviceInfo), "Verity mode: %a",
                IsEnforcing () ? "true" : "false");
@@ -3282,6 +4613,299 @@ CmdOemDevinfo (CONST CHAR8 *arg, VOID *data, UINT32 sz)
                IsChargingScreenEnable () ? "true" : "false");
   FastbootInfo (DeviceInfo);
   WaitForTransferComplete ();
+
+#ifdef ASUS_BUILD
+  // +++ ASUS_BSP : add for ASUS dongle unlock
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Device authorized: %a", IsAuthorized()? "true" : "false");
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Device authorized2: %a", IsAuthorized_2()? "true" : "false");
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // --- ASUS_BSP : add for ASUS dongle unlock
+
+  // +++ ASUS_BSP : add for WaterMask unlock
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "WaterMask unlock: %a", IsAuthorized_3()? "Y" : "N");
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // --- ASUS_BSP : add for WaterMask unlock
+
+  // +++ ASUS_BSP : Add for xbl info
+  GetXBLVersion(TempChar, sizeof(TempChar));
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "XBL: %a", TempChar);
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // --- ASUS_BSP : Add for xbl info
+
+  // +++ ASUS_BSP : Add for abl info
+  GetBootloaderVersion(TempChar, sizeof(TempChar));
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "ABL: %a", TempChar);
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // --- ASUS_BSP : Add for abl info
+
+  // +++ ASUS_BSP : Add for ssn info (from asuskey4)
+  GetSSNNum(TempChar, sizeof(TempChar));
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "SSN: %a", TempChar);
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // --- ASUS_BSP : Add for ssn info
+
+  // +++ ASUS_BSP : Add for isn info (from asuskey4)
+  GetISNNum(TempChar, sizeof(TempChar));
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "ISN: %a", TempChar);
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // --- ASUS_BSP : Add for isn info
+
+  // +++ ASUS_BSP : Add for imei info (from asuskey4)
+  GetIMEINum(TempChar, sizeof(TempChar));
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "IMEI: %a", TempChar);
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // --- ASUS_BSP : Add for imei info
+
+  // +++ ASUS_BSP : Add for imei2 info (from asuskey4)
+  GetIMEI2Num(TempChar, sizeof(TempChar));
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "IMEI2: %a", TempChar);
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // --- ASUS_BSP : Add for imei2 info
+
+  // +++ ASUS_BSP : Add for cid info (from asuskey4)
+  GetCIDName(TempChar, sizeof(TempChar));
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "CID: %a", TempChar);
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // --- ASUS_BSP : Add for cid info
+
+  // +++ ASUS_BSP : Add for read country code (from asuskey4)
+  GetCountryCode(TempChar, sizeof(TempChar));
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "COUNTRY: %a", TempChar);
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // --- ASUS_BSP : Add for read country code
+
+  // +++ ASUS_BPS : add for force hwid
+  GetProjName(TempChar, sizeof(TempChar));
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Project: %a", TempChar);
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "DT ID: %d", GetDeviceTreeID());
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // --- ASUS_BPS : add for force hwid
+
+  // +++ ASUS_BSP : Add for get Feature ID
+  TempNum = Get_FEATURE_ID();
+
+  if (TempNum == 0x6){
+      AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Feature ID: %x (%a)", TempNum, "001-AB-SM8550_ES1");
+  }else if(TempNum == 0x0){
+      AsciiSPrint(DeviceInfo, sizeof(DeviceInfo),"Feature ID: %x (%a)", TempNum, "002-AB-SM8550_ES2");
+  }else if(TempNum == 0x8){
+      AsciiSPrint(DeviceInfo, sizeof(DeviceInfo),"Feature ID: %x (%a)", TempNum, "002-AB-SM8550P_ES");
+  }else{
+      AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Feature ID: %x (%a)", TempNum, "Unknown");
+  }
+  
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // --- ASUS_BSP : Add for get Feature ID
+
+  // +++ ASUS_BSP : Add for get JTAG ID
+  TempNum = (Get_JTAG_ID() & 0xF000) >> 12;
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "JTAG ID: %x (0x%x)", TempNum, Get_JTAG_ID());
+
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // --- ASUS_BSP : Add for get JTAG ID
+
+  // +++ ASUS_BSP : add for fuse blow
+  if(IsSecureBootEnabled())
+  {
+    AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "SB: Y");
+    FastbootInfo(DeviceInfo);
+    WaitForTransferComplete();
+  }
+  else
+  {
+    AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "SB: N");
+    FastbootInfo(DeviceInfo);
+    WaitForTransferComplete();
+  }
+  // --- ASUS_BSP : add for fuse blow
+
+  // +++ ASUS_BSP : add for check fuse with no rpmb
+  BOOLEAN SecureDeviceNoRpmb = FALSE;
+  IsSecureDeviceNoCheckRpmb(&SecureDeviceNoRpmb);
+  if(SecureDeviceNoRpmb)
+  {
+    AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "SBNR: Y");
+    FastbootInfo(DeviceInfo);
+    WaitForTransferComplete();
+  }
+  else
+  {
+    AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "SBNR: N");
+    FastbootInfo(DeviceInfo);
+    WaitForTransferComplete();
+  }
+  // --- ASUS_BSP : add for check fuse with no rpmb
+
+  // +++ ASUS_BSP : add for ddr info
+  /*
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "DDR Manufacturer ID: %x", Get_DDR_Manufacturer_ID());
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "DDR Device Type: %x", Get_DDR_Device_Type());
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  */
+  // --- ASUS_BSP : add for ddr info
+
+  //+++ ASUS_BSP : add for dm-verity counter
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "TotalDMCounter: %d", GetTotalDmVerityCounter());
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "DMCounter: %d", GetDmVerityCounter());
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  //+++ ASUS_BSP : add for dm-verity counter
+
+  //+++ ASUS_BSP : add for unbootable_counter and retry_counter
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "SlotARetryCounter: %d", GetSlotARetryCounter());
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "SlotAUnbootableCounter: %d", GetSlotAUnbootableCounter());
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "SlotBRetryCounter: %d", GetSlotBRetryCounter());
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "SlotBUnbootableCounter: %d", GetSlotBUnbootableCounter());
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  //--- ASUS_BSP : add for unbootable_counter and retry_counter
+
+  // +++ ASUS_BSP : add for boot count
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "BOOT_COUNT: %d", GetBootCounter());
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // --- ASUS_BSP : add for boot count
+
+  // +++ ASUS_BSP : add for lock count
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "LOCK_COUNT: %d", GetLockCounter());
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // --- ASUS_BSP : add for lock count
+
+  // +++ ASUS_BSP : add for check apdp partition
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Check_APDP: %d", GetAPDP());
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // +++ ASUS_BSP : add for check apdp partition
+
+  // +++ ASUS_BSP : check if have rawdump partiton or not
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "rawdump_en: %a", check_rawdump_partition()? "true" : "false");
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // --- ASUS_BSP : check if have rawdump partiton or not
+
+  // +++ ASUS_BSP : add for logcat-asdf sevices
+  AsciiSPrint (DeviceInfo, sizeof (DeviceInfo), "force start logcat-asdf: %a", GetLogcatAsdfOn() ? "true" : "false");
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // --- ASUS_BSP : add for logcat-asdf sevices
+
+  // +++ ASUS_BSP : add for get current slot
+  UnicodeStrToAsciiStr (GetCurrentSlotSuffix ().Suffix, TempChar);
+  SKIP_FIRSTCHAR_IN_SLOT_SUFFIX (TempChar);
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Current Slot: %a", TempChar);
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // --- ASUS_BSP : add for get current slot
+
+  // +++ ASUS_BSP : add for check if current slot is bootable
+  if(!StrnCmp (GetCurrentSlotSuffix ().Suffix, L"_a", StrLen (L"_a"))){
+    AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Slot_a bootable: %a", check_unbootable(4, 11)? "Unbootable" : "Bootable");
+    FastbootInfo(DeviceInfo);
+    WaitForTransferComplete();
+  }else{
+    AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Slot_b bootable: %a", check_unbootable(4, 36)? "Unbootable" : "Bootable");
+    FastbootInfo(DeviceInfo);
+    WaitForTransferComplete();
+  }
+  // --- ASUS_BSP : add for check if boot is bootable
+
+  // +++ ASUS_BSP : add for AVB Verity
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "AVB Verity: %a", GetAvbVerity()? "Disable" : "Enable");
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // --- ASUS_BSP : add for AVB Verity
+
+  // +++ ASUS_BSP : add for verify_vbmeta_ret
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Verify vbmeta ret: %d", GetVerifyVbmetaRet());
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // --- ASUS_BSP : add for verify_vbmeta_ret
+
+  AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "ABL_FTM: %a", is_ftm_mode()? "TRUE" : "FALSE");
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  
+  // add for uart status +++
+  AsciiSPrint (DeviceInfo, sizeof (DeviceInfo), "UART-ON Status: %a", GetUartStatus() ? "true" : "false");
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // add for uart status ---
+/*
+  if (IsVirtualAbOtaSupported ()) {
+    SnapshotMergeStatus = GetSnapshotMergeStatus ();
+
+    switch (SnapshotMergeStatus) {
+      case SNAPSHOTTED:
+        SnapshotMergeStatus = SNAPSHOTTED;
+        break;
+      case MERGING:
+        SnapshotMergeStatus = MERGING;
+        break;
+      default:
+        SnapshotMergeStatus = NONE_MERGE_STATUS;
+        break;
+    }
+
+    AsciiSPrint (SnapshotMergeState,
+                  AsciiStrLen (VabSnapshotMergeStatus[SnapshotMergeStatus]) + 1,
+                  "%a", VabSnapshotMergeStatus[SnapshotMergeStatus]);
+
+    AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "SNAPSHOT-UPDATE-STATUS: %a", SnapshotMergeState);
+    FastbootInfo(DeviceInfo);
+    WaitForTransferComplete();
+  }
+*/  
+  // add for debug unlock status +++
+  AsciiSPrint (DeviceInfo, sizeof (DeviceInfo), "DEBUG UNLOCK Status: %a", IsDebugUnlocked() ? "true" : "false");
+  FastbootInfo(DeviceInfo);
+  WaitForTransferComplete();
+  // add for debug unlock status ---
+  memset(DeviceInfo, 0, sizeof(DeviceInfo));
+#endif
+
+  if (IsHibernationEnabled ()) {
+    AsciiSPrint (DeviceInfo, sizeof (DeviceInfo), "Erase swap on restore: %a",
+                 IsSnapshotGolden () ? "true" : "false");
+    FastbootInfo (DeviceInfo);
+    WaitForTransferComplete ();
+  }
+
   FastbootOkay ("");
 }
 
@@ -3412,226 +5036,6 @@ AcceptCmd (IN UINT64 Size, IN CHAR8 *Data)
   FastbootFail ("unknown command");
 }
 
-STATIC VOID
-CheckPartitionFsSignature (IN CHAR16 *PartName,
-                           OUT FS_SIGNATURE *FsSignature)
-{
-  EFI_BLOCK_IO_PROTOCOL *BlockIo = NULL;
-  EFI_HANDLE *Handle = NULL;
-  EFI_STATUS Status = EFI_SUCCESS;
-  UINT32 BlkSz = 0;
-  CHAR8 *FsSuperBlk = NULL;
-  CHAR8 *FsSuperBlkBuffer = NULL;
-  UINT32 SuperBlkLba = 0;
-
-  *FsSignature = UNKNOWN_FS_SIGNATURE;
-
-  Status = PartitionGetInfo (PartName, &BlockIo, &Handle);
-  if (Status != EFI_SUCCESS) {
-    DEBUG ((EFI_D_ERROR, "Failed to Info for %s partition\n", PartName));
-    return;
-  }
-  if (!BlockIo) {
-    DEBUG ((EFI_D_ERROR, "BlockIo for %s is corrupted\n", PartName));
-    return;
-  }
-
-  BlkSz = BlockIo->Media->BlockSize;
-  FsSuperBlkBuffer = AllocateZeroPool (BlkSz);
-  if (!FsSuperBlkBuffer) {
-    DEBUG ((EFI_D_ERROR, "Failed to allocate buffer for superblock %s\n",
-                            PartName));
-    return;
-  }
-  FsSuperBlk = FsSuperBlkBuffer;
-  SuperBlkLba = (FS_SUPERBLOCK_OFFSET / BlkSz);
-
-  BlockIo->ReadBlocks (BlockIo, BlockIo->Media->MediaId,
-                           SuperBlkLba,
-                           BlkSz, FsSuperBlkBuffer);
-
-  /* If superblklba is 0, it means super block is part of first block read */
-  if (SuperBlkLba == 0) {
-    FsSuperBlk += FS_SUPERBLOCK_OFFSET;
-  }
-
-  if (*((UINT16 *)&FsSuperBlk[EXT_MAGIC_OFFSET_SB]) == (UINT16)EXT_FS_MAGIC) {
-    DEBUG ((EFI_D_VERBOSE, "%s Found EXT FS type\n", PartName));
-    *FsSignature = EXT_FS_SIGNATURE;
-  } else if (*((UINT32 *)&FsSuperBlk[F2FS_MAGIC_OFFSET_SB]) ==
-              (UINT32)F2FS_FS_MAGIC) {
-      DEBUG ((EFI_D_VERBOSE, "%s Found F2FS FS type\n", PartName));
-      *FsSignature = F2FS_FS_SIGNATURE;
-    } else {
-        DEBUG ((EFI_D_VERBOSE, "%s No Known FS type Found\n", PartName));
-  }
-
-  if (FsSuperBlkBuffer) {
-     FreePool (FsSuperBlkBuffer);
-  }
-  return;
-}
-
-STATIC EFI_STATUS
-GetPartitionType (IN CHAR16 *PartName, OUT CHAR8 * PartType)
-{
-  UINT32 LoopCounter;
-  CHAR8 AsciiPartName[MAX_GET_VAR_NAME_SIZE];
-  FS_SIGNATURE FsSignature;
-
-  if (PartName == NULL ||
-      PartType == NULL) {
-    DEBUG ((EFI_D_ERROR, "Invalid parameters to GetPartitionType\n"));
-    return EFI_INVALID_PARAMETER;
-  }
-
-  /* By default copy raw to response */
-  AsciiStrnCpyS (PartType, MAX_GET_VAR_NAME_SIZE,
-                  RAW_FS_STR, AsciiStrLen (RAW_FS_STR));
-  UnicodeStrToAsciiStr (PartName, AsciiPartName);
-
-  /* Mark partition type for hard-coded partitions only */
-  for (LoopCounter = 0; LoopCounter < ARRAY_SIZE (part_info); LoopCounter++) {
-    /* Check if its a hardcoded partition type */
-    if (!AsciiStrnCmp ((CONST CHAR8 *) AsciiPartName,
-                          part_info[LoopCounter].part_name,
-                          AsciiStrLen (part_info[LoopCounter].part_name))) {
-      /* Check filesystem type present on partition */
-      CheckPartitionFsSignature (PartName, &FsSignature);
-      switch (FsSignature) {
-        case EXT_FS_SIGNATURE:
-          AsciiStrnCpyS (PartType, MAX_GET_VAR_NAME_SIZE, EXT_FS_STR,
-                          AsciiStrLen (EXT_FS_STR));
-          break;
-        case F2FS_FS_SIGNATURE:
-          AsciiStrnCpyS (PartType, MAX_GET_VAR_NAME_SIZE, F2FS_FS_STR,
-                          AsciiStrLen (F2FS_FS_STR));
-          break;
-        case UNKNOWN_FS_SIGNATURE:
-          /* Copy default hardcoded type in case unknown partition type */
-          AsciiStrnCpyS (PartType, MAX_GET_VAR_NAME_SIZE,
-                          part_info[LoopCounter].type_response,
-                          AsciiStrLen (part_info[LoopCounter].type_response));
-      }
-    }
-  }
-  return EFI_SUCCESS;
-}
-
-STATIC EFI_STATUS
-GetPartitionSizeViaName (IN CHAR16 *PartName, OUT CHAR8 * PartSize)
-{
-  EFI_BLOCK_IO_PROTOCOL *BlockIo = NULL;
-  EFI_HANDLE *Handle = NULL;
-  EFI_STATUS Status = EFI_INVALID_PARAMETER;
-  UINT64 PartitionSize;
-
-  Status = PartitionGetInfo (PartName, &BlockIo, &Handle);
-  if (Status != EFI_SUCCESS) {
-    return Status;
-  }
-
-  if (!BlockIo) {
-    DEBUG ((EFI_D_ERROR, "BlockIo for %s is corrupted\n", PartName));
-    return EFI_VOLUME_CORRUPTED;
-  }
-
-  PartitionSize = GetPartitionSize (BlockIo);
-  if (!PartitionSize) {
-    return EFI_BAD_BUFFER_SIZE;
-  }
-
-  AsciiSPrint (PartSize, MAX_RSP_SIZE, " 0x%llx", PartitionSize);
-  return EFI_SUCCESS;
-
-}
-
-STATIC EFI_STATUS
-PublishGetVarPartitionInfo (
-                            IN struct GetVarPartitionInfo *PublishedPartInfo,
-                            IN UINT32 NumParts)
-{
-  UINT32 PtnLoopCount;
-  EFI_STATUS Status = EFI_INVALID_PARAMETER;
-  EFI_STATUS RetStatus = EFI_SUCCESS;
-  CHAR16 *PartitionNameUniCode = NULL;
-  BOOLEAN PublishType;
-  BOOLEAN PublishSize;
-
-  /* Clear Published Partition Buffer */
-  gBS->SetMem (PublishedPartInfo,
-          sizeof (struct GetVarPartitionInfo) * MAX_NUM_PARTITIONS, 0);
-
-  /* Loop will go through each partition entry
-     and publish info for all partitions.*/
-  for (PtnLoopCount = 1; PtnLoopCount <= NumParts; PtnLoopCount++) {
-    PublishType = FALSE;
-    PublishSize = FALSE;
-    PartitionNameUniCode = PtnEntries[PtnLoopCount].PartEntry.PartitionName;
-    /* Skip Null/last partition */
-    if (PartitionNameUniCode[0] == '\0') {
-      continue;
-    }
-    UnicodeStrToAsciiStr (PtnEntries[PtnLoopCount].PartEntry.PartitionName,
-                          (CHAR8 *)PublishedPartInfo[PtnLoopCount].part_name);
-
-    /* Fill partition size variable and response string */
-    AsciiStrnCpyS (PublishedPartInfo[PtnLoopCount].getvar_size_str,
-                      MAX_GET_VAR_NAME_SIZE, "partition-size:",
-                      AsciiStrLen ("partition-size:"));
-    Status = AsciiStrnCatS (PublishedPartInfo[PtnLoopCount].getvar_size_str,
-                            MAX_GET_VAR_NAME_SIZE,
-                            PublishedPartInfo[PtnLoopCount].part_name,
-                            AsciiStrLen (
-                              PublishedPartInfo[PtnLoopCount].part_name));
-    if (!EFI_ERROR (Status)) {
-      Status = GetPartitionSizeViaName (
-                            PartitionNameUniCode,
-                            PublishedPartInfo[PtnLoopCount].size_response);
-      if (Status == EFI_SUCCESS) {
-        PublishSize = TRUE;
-      }
-    }
-
-    /* Fill partition type variable and response string */
-    AsciiStrnCpyS (PublishedPartInfo[PtnLoopCount].getvar_type_str,
-                    MAX_GET_VAR_NAME_SIZE, "partition-type:",
-                    AsciiStrLen ("partition-type:"));
-    Status = AsciiStrnCatS (PublishedPartInfo[PtnLoopCount].getvar_type_str,
-                              MAX_GET_VAR_NAME_SIZE,
-                              PublishedPartInfo[PtnLoopCount].part_name,
-                              AsciiStrLen (
-                                PublishedPartInfo[PtnLoopCount].part_name));
-    if (!EFI_ERROR (Status)) {
-      Status = GetPartitionType (
-                            PartitionNameUniCode,
-                            PublishedPartInfo[PtnLoopCount].type_response);
-      if (Status == EFI_SUCCESS) {
-        PublishType = TRUE;
-      }
-    }
-
-    if (PublishSize) {
-      FastbootPublishVar (PublishedPartInfo[PtnLoopCount].getvar_size_str,
-                              PublishedPartInfo[PtnLoopCount].size_response);
-    } else {
-        DEBUG ((EFI_D_ERROR, "Error Publishing size info for %s partition\n",
-                                                        PartitionNameUniCode));
-        RetStatus = EFI_INVALID_PARAMETER;
-    }
-
-    if (PublishType) {
-      FastbootPublishVar (PublishedPartInfo[PtnLoopCount].getvar_type_str,
-                              PublishedPartInfo[PtnLoopCount].type_response);
-    } else {
-        DEBUG ((EFI_D_ERROR, "Error Publishing type info for %s partition\n",
-                                                        PartitionNameUniCode));
-        RetStatus = EFI_INVALID_PARAMETER;
-    }
-  }
-  return RetStatus;
-}
-
 STATIC EFI_STATUS
 ReadAllowUnlockValue (UINT32 *IsAllowUnlock)
 {
@@ -3666,6 +5070,3452 @@ Exit:
   FreePool (Buffer);
   return Status;
 }
+
+#ifdef ASUS_BUILD
+BOOLEAN CheckAsusVerifiedState;
+extern BOOLEAN AsusVbmetaVerified;
+extern BOOLEAN AsusBootVerified;
+extern BOOLEAN AsusDtboVerified;
+extern BOOLEAN AsusVendorBootVerified;
+extern BOOLEAN AsusInitBootVerified;
+STATIC VOID CmdOemAsusVerifiedState(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	EFI_STATUS Status = EFI_SUCCESS;
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	BOOLEAN AsusVerifiedState = FALSE;
+
+	CheckAsusVerifiedState = TRUE;
+
+	BootInfo Info = {0};
+	Info.MultiSlotBoot = TRUE;
+	Info.BootIntoRecovery = FALSE;
+	Info.BootReasonAlarm = FALSE;
+	Status = LoadImageAndAuth (&Info, FALSE, FALSE);
+	if (Status != EFI_SUCCESS)
+	{
+		FastbootFail("Failed to LoadImageAndAuth.");
+	}
+
+	AsusVerifiedState = AsusVbmetaVerified && 
+	                    AsusBootVerified && 
+	                    AsusDtboVerified && 
+	                    AsusVendorBootVerified &&
+	                    AsusInitBootVerified;
+	
+	BOOLEAN DMVeritySate = (GetDmVerityCounter() == 0) ? TRUE: FALSE;
+	BOOLEAN DMVerityMergeState = FALSE;
+	if(GetSnapshotMergeStatus() == MERGING){
+	    DMVerityMergeState = (GetSnapshotCheckCounter() == 0) ? TRUE: FALSE;
+	}else{
+	    DMVerityMergeState = TRUE;
+	}
+	
+	AsusVerifiedState = AsusVerifiedState && 
+	                    DMVeritySate && 
+	                    DMVerityMergeState;
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "=== Result ===");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "AsusVerifiedState = %a \n", AsusVerifiedState? "PASS" : "FAIL" );
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "=== Info ===");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "AsusVbmetaVerified = %a", AsusVbmetaVerified? "PASS" : "FAIL" );
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "AsusBootVerified = %a", AsusBootVerified? "PASS" : "FAIL" );
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "AsusDtboVerified = %a", AsusDtboVerified? "PASS" : "FAIL" );
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "AsusVendorBootVerified = %a", AsusVendorBootVerified? "PASS" : "FAIL" );
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "AsusInitBootVerified = %a", AsusInitBootVerified? "PASS" : "FAIL" );
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "DMVeritySate = %a", DMVeritySate? "PASS" : "FAIL" );
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "DMVerityMergeState = %a", DMVerityMergeState? "PASS" : "FAIL" );
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	CheckAsusVerifiedState = FALSE;
+	FastbootOkay("");
+
+	RebootDevice (FASTBOOT_MODE);
+}
+
+// +++ ASUS_BSP : add for verify_vbmeta_ret
+STATIC VOID CmdOemGetVerifyVbmetaRet(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemGetVerifyVbmetaRet()\n"));
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Verify Vbmeta Ret = %d \n", GetVerifyVbmetaRet());
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "=== Ret Info List ===");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 0 : AVB_SLOT_VERIFY_RESULT_OK");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 1 : AVB_SLOT_VERIFY_RESULT_ERROR_OOM");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 2 : AVB_SLOT_VERIFY_RESULT_ERROR_IO");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 3 : AVB_SLOT_VERIFY_RESULT_ERROR_VERIFICATION");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 4 : AVB_SLOT_VERIFY_RESULT_ERROR_ROLLBACK_INDEX");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 5 : AVB_SLOT_VERIFY_RESULT_ERROR_PUBLIC_KEY_REJECTED");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 6 : AVB_SLOT_VERIFY_RESULT_ERROR_INVALID_METADATA");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 7 : AVB_SLOT_VERIFY_RESULT_ERROR_UNSUPPORTED_VERSION");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 8 : AVB_SLOT_VERIFY_RESULT_ERROR_INVALID_ARGUMENT");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemGetVerifyVbmetaRet()\n"));
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for verify_vbmeta_ret
+
+// +++ ASUS_BSP : add for enable flash raw in slot_b
+STATIC VOID CmdOemSlotbEnable(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	g_asus_slot_b_enable = TRUE;
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for enable flash raw in slot_b
+
+#ifdef ASUS_AI2205_BUILD
+STATIC VOID CmdOemFEASDF(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+
+	g_allow_flash_and_erase_asdf = TRUE;
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "ASDF Flag = %a \n", g_allow_flash_and_erase_asdf? "PASS" : "FAIL" );
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	FastbootOkay("");
+}
+
+#define TOTAL_LOG_NUM 50
+
+STATIC VOID CmdOemRecordInfo(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	sys_info sysinfo;
+	int i = 0;
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemRecordInfo()\n"));
+	if(read_sysinfo(&sysinfo) == EFI_SUCCESS)
+	{
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " ===================================================");
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " Asus Falling Record Info count: %d", sysinfo.falling_count);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " ---------------------------------------------------");
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		for (i = 0; i < sysinfo.falling_count && i < TOTAL_LOG_NUM; i++)
+		{
+			AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " Asus Falling Record Time: No %a", sysinfo.falling_time[i]);
+			FastbootInfo(DeviceInfo);
+			WaitForTransferComplete();
+		}
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " ===================================================");
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " Asus Hit Record Info count: %d", sysinfo.hit_count);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " ---------------------------------------------------");
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		for (i = 0; i < sysinfo.hit_count && i < TOTAL_LOG_NUM; i++)
+		{
+			AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " Asus Hit Record Time: No %a", sysinfo.hit_time[i]);
+			FastbootInfo(DeviceInfo);
+			WaitForTransferComplete();
+		}
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " ===================================================");
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " Asus Thump Record Info count: %d", sysinfo.thump_count);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " ---------------------------------------------------");
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		for (i = 0; i < sysinfo.thump_count && i < TOTAL_LOG_NUM; i++)
+		{
+			AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " Asus Thump Record Time: No %a", sysinfo.thump_time[i]);
+			FastbootInfo(DeviceInfo);
+			WaitForTransferComplete();
+		}
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " ===================================================");
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		FastbootOkay("");
+	}
+	else
+	{
+		FastbootFail("Failed to read sysinfo");
+	}
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemRecordInfo()\n"));
+}
+#endif
+// +++ ASUS_BSP : add for restore factory data
+STATIC VOID CmdOemRestoreFac(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+#ifdef ASUS_AI2205_BUILD
+
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	unsigned long calculatedCRC_factory = 0xFFFFFFFF;
+	unsigned long calculatedCRC_persist = 0xFFFFFFFF;
+	unsigned long rpmbCRC_factory = 0xFFFFFFFF;
+
+	// +++ ASUS_BSP : add for fastboot permission
+	if(!is_ftm_mode())
+	{
+		if (!IsAuthorized() && !IsAuthorized_2())
+		{
+			FastbootFail("Permission denied");
+			return;
+		}
+	}
+	// --- ASUS_BSP : add for fastboot permission
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemRestoreFac()\n"));
+
+	calculatedCRC_factory = AsusCalculatePtCrc32(L"factory");
+	DEBUG((EFI_D_INFO, "[ABL] Calculated factory CRC = 0x%x\n", calculatedCRC_factory));
+
+	rpmbCRC_factory = GetFactoryCRC();
+	DEBUG((EFI_D_INFO, "[ABL] RPMB factory CRC = 0x%x\n", rpmbCRC_factory));
+
+	if ((calculatedCRC_factory != rpmbCRC_factory) && !is_ftm_mode())
+	{
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Restore failed, CRC check error!");
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Calculated factory CRC = 0x%x", calculatedCRC_factory);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "RPMB factory CRC = 0x%x", rpmbCRC_factory);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		FastbootFail("Restore factory to persist failed!");
+		return;
+	}
+
+	restore_factory_to_persist();
+
+	calculatedCRC_persist = AsusCalculatePtCrc32(L"persist");
+	DEBUG((EFI_D_INFO, "[ABL] Calculated persist CRC = 0x%x\n", calculatedCRC_persist));
+
+	if (calculatedCRC_persist != calculatedCRC_factory)
+	{
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Restore failed, CRC mismatch!");
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Calculated persist CRC = 0x%x", calculatedCRC_persist);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Calculated factory CRC = 0x%x", calculatedCRC_factory);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		FastbootFail("Restore factory to persist failed!");
+		return;
+	}
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Restore factory to persist successfully!");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	FastbootOkay("");
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemRestoreFac()\n"));
+#else
+	FastbootOkay("");
+#endif
+}
+// --- ASUS_BSP : add for restore factory data
+
+// +++ ASUS_BSP : add for backup factory data
+STATIC VOID CmdOemBackupFac(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+#ifdef ASUS_AI2205_BUILD
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	unsigned long calculatedCRC_factory = 0xFFFFFFFF;
+	unsigned long calculatedCRC_persist = 0xFFFFFFFF;
+	unsigned long rpmbCRC_factory = 0xFFFFFFFF;
+
+	// +++ ASUS_BSP : add for fastboot permission
+	if(!is_ftm_mode())
+	{
+		if (!IsAuthorized() && !IsAuthorized_2())
+		{
+			FastbootFail("Permission denied");
+			return;
+		}
+	}
+	// --- ASUS_BSP : add for fastboot permission
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemBackupFac()\n"));
+
+	backup_persist_to_factory();
+
+	calculatedCRC_persist = AsusCalculatePtCrc32(L"persist");
+	DEBUG((EFI_D_INFO, "[ABL] Calculated persist CRC = 0x%x\n", calculatedCRC_persist));
+
+	calculatedCRC_factory = AsusCalculatePtCrc32(L"factory");
+	DEBUG((EFI_D_INFO, "[ABL] Calculated factory CRC = 0x%x\n", calculatedCRC_factory));
+
+	if (calculatedCRC_factory != calculatedCRC_persist) {
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Backup failed, CRC mismatch!");
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Calculated persist CRC = 0x%x", calculatedCRC_persist);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Calculated factory CRC = 0x%x", calculatedCRC_factory);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		FastbootFail("Backup persist to factory failed");
+		return;
+	}else {
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Calculated factory CRC = 0x%x", calculatedCRC_factory);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		SetFactoryCRC(calculatedCRC_factory);
+		rpmbCRC_factory = GetFactoryCRC();
+
+		if ((rpmbCRC_factory != calculatedCRC_factory))
+		{
+			AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Backup failed, CRC check error!");
+			FastbootInfo(DeviceInfo);
+			WaitForTransferComplete();
+			AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Calculated factory CRC = 0x%x", calculatedCRC_factory);
+			FastbootInfo(DeviceInfo);
+			WaitForTransferComplete();
+			AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "RPMB factory CRC = 0x%x", rpmbCRC_factory);
+			FastbootInfo(DeviceInfo);
+			WaitForTransferComplete();
+
+			FastbootFail("Backup persist to factory failed!");
+			return;
+		}
+
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Backup persist to factory successfully!");
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		FastbootOkay("");
+	}
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemBackupFac()\n"));
+#else
+	FastbootOkay("");
+#endif
+}
+// --- ASUS_BSP : add for backup factory data
+
+// +++ ASUS_BSP : add for update cmdline
+STATIC VOID CmdOemUpdateCmdline(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	CHAR8  DeviceInfo[MAX_RSP_SIZE];
+	CHAR16 Cmdline[MAX_RSP_SIZE];
+
+	AsciiStrToUnicodeStr(arg, Cmdline);
+
+	DEBUG((EFI_D_INFO, "[ABL] +++ CmdOemUpdateCmdline()\n"));
+
+	if (!StrnCmp(Cmdline, L"androidboot.id.prj=", StrLen(L"androidboot.id.prj="))){
+		AsciiSPrint(cmd_prj_id, sizeof(cmd_prj_id), " %s", Cmdline);
+	}else if (!StrnCmp(Cmdline, L"androidboot.id.stage=", StrLen(L"androidboot.id.stage="))){
+		AsciiSPrint(cmd_stage_id, sizeof(cmd_stage_id), " %s", Cmdline);
+	}else if (!StrnCmp(Cmdline, L"androidboot.id.sku=", StrLen(L"androidboot.id.sku="))){
+		AsciiSPrint(cmd_sku_id, sizeof(cmd_sku_id), " %s", Cmdline);
+	}else if (!StrnCmp(Cmdline, L"androidboot.id.ddr=", StrLen(L"androidboot.id.ddr="))){
+		AsciiSPrint(cmd_ddr_id, sizeof(cmd_ddr_id), " %s", Cmdline);
+	}else if (!StrnCmp(Cmdline, L"androidboot.id.nfc=", StrLen(L"androidboot.id.nfc="))){
+		AsciiSPrint(cmd_nfc_id, sizeof(cmd_nfc_id), " %s", Cmdline);
+	}else if (!StrnCmp(Cmdline, L"androidboot.id.rf=", StrLen(L"androidboot.id.rf="))){
+		AsciiSPrint(cmd_rf_id, sizeof(cmd_rf_id), " %s", Cmdline);
+	}else if (!StrnCmp(Cmdline, L"androidboot.id.fp=", StrLen(L"androidboot.id.fp="))){
+		AsciiSPrint(cmd_fp_id, sizeof(cmd_fp_id), " %s", Cmdline);
+	}else if (!StrnCmp(Cmdline, L"androidboot.id.lgfcon=", StrLen(L"androidboot.id.lgfcon="))){
+		AsciiSPrint(cmd_lgf_con_id, sizeof(cmd_lgf_con_id), " %s", Cmdline);
+	}else if (!StrnCmp(Cmdline, L"androidboot.id.fc=", StrLen(L"androidboot.id.fc="))){
+		AsciiSPrint(cmd_fc_id, sizeof(cmd_fc_id), " %s", Cmdline);
+	}else if (!StrnCmp(Cmdline, L"androidboot.id.upper=", StrLen(L"androidboot.id.upper="))){
+		AsciiSPrint(cmd_upper_id, sizeof(cmd_upper_id), " %s", Cmdline);
+	}else if (!StrnCmp(Cmdline, L"androidboot.id.sub=", StrLen(L"androidboot.id.sub="))){
+		AsciiSPrint(cmd_sub_id, sizeof(cmd_sub_id), " %s", Cmdline);
+	}else if (!StrnCmp(Cmdline, L"androidboot.country_code=", StrLen(L"androidboot.country_code="))){
+		AsciiSPrint(cmd_country_code, sizeof(cmd_country_code), " %s", Cmdline);
+	}else{
+		AsciiSPrint(cmd_update_cmdline, sizeof(cmd_update_cmdline), " %s", Cmdline);
+	}
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Update cmdline : %a\n", (char*)arg);
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Use following cmd to continue boot:");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "fastboot set_active a");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "fastboot continue \n");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	DEBUG((EFI_D_INFO, "[ABL] --- CmdOemUpdateCmdline()\n"));
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for update cmdline
+
+// +++ ASUS_BSP : add for reset vbmeta_system rollback value
+STATIC VOID CmdOemResetRollback(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+#if 0
+	// +++ ASUS_BSP : add for fastboot permission
+	if(!ASUS_FASTBOOT_PERMISSION)
+	{
+		FastbootFail("permission denied");
+		return;
+	}
+	// --- ASUS_BSP : add for fastboot permission
+#endif
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemResetRollback()\n"));
+	WriteRollbackIndex (0x2, 0x0);
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemResetRollback()\n"));
+
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for reset vbmeta_system rollback value
+
+// +++ ASUS_BSP : add for read vbmeta_system rollback value
+STATIC VOID CmdOemReadRollback(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+#if 0
+		// +++ ASUS_BSP : add for fastboot permission
+		if(!ASUS_FASTBOOT_PERMISSION)
+		{
+			FastbootFail("permission denied");
+			return;
+		}
+		// --- ASUS_BSP : add for fastboot permission
+#endif
+
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	UINT64 RollbackIndex = 0x0;
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemReadRollback()\n"));
+	ReadRollbackIndex (0x2, &RollbackIndex);
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Vbmeta System rollback = %x \n", RollbackIndex);
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemReadRollback()\n"));
+
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for read vbmeta_system rollback value
+
+// +++ ASUS_BSP : add for read vbmeta magic
+STATIC VOID CmdOemReadVbmeta(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemReadVbmeta()\n"));
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Vbmeta Magic = %a \n", read_vbmeta_magic());
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemReadVbmeta()\n"));
+
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for read vbmeta magic
+
+// +++ ASUS_BSP : add for enable vbmeta magic
+STATIC VOID CmdOemEnableVbmeta(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	// +++ ASUS_BSP : add for fastboot permission
+	if(!ASUS_FASTBOOT_PERMISSION)
+	{
+		FastbootFail("permission denied");
+		return;
+	}
+	// --- ASUS_BSP : add for fastboot permission
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemEnableVbmeta()\n"));
+	enable_vbmeta_magic();
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemEnableVbmeta()\n"));
+
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for enable vbmeta magic
+
+// +++ ASUS_BSP : add for enable verity
+STATIC VOID CmdOemEnableVerity(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	// +++ ASUS_BSP : add for fastboot permission
+	if(!ASUS_FASTBOOT_PERMISSION)
+	{
+		FastbootFail("permission denied");
+		return;
+	}
+	// --- ASUS_BSP : add for fastboot permission
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemEnableVerity()\n"));
+	enable_verity();
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemEnableVerity()\n"));
+
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for enable verity
+
+// +++ ASUS_BSP : add for disable verity
+STATIC VOID CmdOemDisableVerity(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	// +++ ASUS_BSP : add for fastboot permission
+	if(!ASUS_FASTBOOT_PERMISSION)
+	{
+		FastbootFail("permission denied");
+		return;
+	}
+	// --- ASUS_BSP : add for fastboot permission
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemDisableVerity()\n"));
+	disable_verity();
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemDisableVerity()\n"));
+
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for disable verity
+
+// +++ ASUS_BPS : add for reset WaterMask unlock
+STATIC VOID CmdOemResetAuth3 (CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	EFI_STATUS Status = EFI_SUCCESS ;
+
+	// +++ ASUS_BSP : add for fastboot permission
+	if(!IsAuthorized_3())
+	{
+		FastbootFail("The watermark is already enabled.");
+		return;
+	}
+	// --- ASUS_BSP : add for fastboot permission
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemResetAuth3()\n"));
+
+	Status = SetAuthorized3Value(FALSE);
+	DEBUG((EFI_D_ERROR, "[ABL] SetAuthorized3Value(FALSE) : %d\n", IsAuthorized_3()));
+
+	if (Status != EFI_SUCCESS) {
+		DEBUG((EFI_D_ERROR, "[ABL] CmdOemResetDevInfo : Failed to SetAuthorized3Value, Status\n", Status));
+		FastbootFail ("Failed to SetAuthorized3Value");
+	}
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemResetAuth3()\n"));
+
+	FastbootOkay("");
+}
+// --- ASUS_BPS : add for reset WaterMask unlock
+
+// +++ ASUS_BPS : add for reset dev info
+STATIC VOID CmdOemResetAuth2 (CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	EFI_STATUS Status = EFI_SUCCESS ;
+
+	// +++ ASUS_BSP : add for fastboot permission
+	if(!ASUS_FASTBOOT_PERMISSION)
+	{
+		FastbootFail("permission denied");
+		return;
+	}
+	// --- ASUS_BSP : add for fastboot permission
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemResetAuth2()\n"));
+
+	Status = SetAuthorized2Value(FALSE);
+	DEBUG((EFI_D_ERROR, "[ABL] SetAuthorized2Value(FALSE) : %d\n", IsAuthorized_2()));
+
+	if (Status != EFI_SUCCESS) {
+		DEBUG((EFI_D_ERROR, "[ABL] CmdOemResetDevInfo : Failed to SetAuthorized2Value, Status\n", Status));
+		FastbootFail ("Failed to SetAuthorized2Value");
+	}
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemResetAuth2()\n"));
+
+	FastbootOkay("");
+}
+
+STATIC VOID CmdOemResetDevInfo(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	EFI_STATUS Status = EFI_SUCCESS;
+	UINT32 ResetDMCounter = 0;//+++ ASUS_BSP : add for dm-verity counter
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemResetDevInfo()\n"));
+
+#if 0 // for ATD request
+	// +++ ASUS_BSP : add for fastboot permission
+	if(!ASUS_FASTBOOT_PERMISSION)
+	{
+		FastbootFail("permission denied");
+		return;
+	}
+	// --- ASUS_BSP : add for fastboot permission
+#endif
+
+	Status = EnableEnforcingMode(TRUE);// TRUE = enforcing, FALSE = logging
+	DEBUG((EFI_D_ERROR, "[ABL]  EnableEnforcingMode(TRUE) : %d\n", IsEnforcing()));
+
+	if (Status != EFI_SUCCESS) {
+		DEBUG((EFI_D_ERROR, "[ABL] CmdOemResetDevInfo : Failed to EnableEnforcingMode, Status\n", Status));
+		FastbootFail ("Failed to EnableEnforcingMode");
+	}
+
+	// +++ ASUS_BSP : lock ASUS dongle unlock flag
+	Status = SetAuthorizedValue(FALSE);
+	DEBUG((EFI_D_ERROR, "[ABL] SetAuthorizedValue(FALSE) : %d\n", IsAuthorized()));
+
+	if (Status != EFI_SUCCESS) {
+		DEBUG((EFI_D_ERROR, "[ABL] CmdOemResetDevInfo : Failed to SetAuthorizedValue, Status\n", Status));
+		FastbootFail ("Failed to SetAuthorizedValue");
+	}
+
+	Status = SetAuthorized2Value(FALSE);
+	DEBUG((EFI_D_ERROR, "[ABL] SetAuthorized2Value(FALSE) : %d\n", IsAuthorized_2()));
+
+	if (Status != EFI_SUCCESS) {
+		DEBUG((EFI_D_ERROR, "[ABL] CmdOemResetDevInfo : Failed to SetAuthorized2Value, Status\n", Status));
+		FastbootFail ("Failed to SetAuthorized2Value");
+	}
+
+#ifdef ASUS_AI2205_BUILD
+	// --- ASUS_BSP : lock ASUS dongle unlock flag
+	Status = SetDeviceDebugUnlockValue(FALSE);
+	DEBUG((EFI_D_ERROR, "[ABL] SetDeviceDebugUnlockValue(FALSE) : %d\n", IsDebugUnlocked()));
+
+	if (Status != EFI_SUCCESS) {
+		DEBUG((EFI_D_ERROR, "[ABL] CmdOemResetDevInfo : Failed to SetDeviceDebugUnlockValue, Status\n", Status));
+		FastbootFail ("Failed to SetDeviceDebugUnlockValue");
+	}
+	// +++ ASUS_BSP : lock ASUS debug unlock flag
+#endif
+	
+	// --- ASUS_BSP : lock ASUS debug unlock flag
+
+	//+++ ASUS_BSP : add for dm-verity counter
+	SetTotalDmVerityCounter(0);
+	GetTotalDmVerityCounter(&ResetDMCounter);
+	DEBUG((EFI_D_ERROR, "[ABL] SetTotalDmVerityCounter(0) : %d\n", ResetDMCounter));
+	SetDmVerityCounter(0);
+	GetDmVerityCounter(&ResetDMCounter);
+	DEBUG((EFI_D_ERROR, "[ABL] SetDmVerityCounter(0) : %d\n", ResetDMCounter));
+	//--- ASUS_BSP : add for dm-verity counter
+	
+	Status = SetUartStatus(FALSE);
+	if (Status != EFI_SUCCESS) {
+		DEBUG((EFI_D_ERROR, "[ABL] CmdOemResetDevInfo : Failed to SetUartStatus, Status\n", Status));
+		FastbootFail ("Failed to SetUartStatus");
+	}
+
+	DEBUG((EFI_D_ERROR, "[ABL]  --- CmdOemResetDevInfo()\n"));
+
+	FastbootOkay("");
+}
+// --- ASUS_BPS : add for reset dev info
+
+// +++ ASUS_BSP : add for force hwid
+STATIC VOID CmdOemForceHwId(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	CHAR8  DeviceInfo[MAX_RSP_SIZE];
+	CHAR16 HwStage[MAX_RSP_SIZE];
+	UINT32 Force_DTID = 0;
+
+	AsciiStrToUnicodeStr(arg, HwStage);
+
+	// +++ ASUS_BSP : add for fastboot permission
+	if(!ASUS_FASTBOOT_PERMISSION && !is_ftm_mode())
+	{
+		FastbootFail("permission denied");
+		return;
+	}
+	// --- ASUS_BSP : add for fastboot permission
+
+	DEBUG((EFI_D_INFO, "[ABL] +++ CmdOemForceHwId()\n"));
+
+	Force_DTID = AsciiStrHexToUint64(arg);
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " force hwid : %a (DT_ID=%d)\n", (char*)arg, Force_DTID);
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Use following cmd to continue boot:");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "fastboot set_active a");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "fastboot continue \n");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	SetDeviceTreeID(Force_DTID);
+	if (GetDeviceTreeID() != Force_DTID)
+	{
+		DEBUG((EFI_D_ERROR, "[ABL] Unable set the device_tree_id : %d\n", Force_DTID));
+		FastbootFail("");
+		return;
+	}
+
+	DEBUG((EFI_D_INFO, "[ABL] --- CmdOemForceHwId()\n"));
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for force hwid
+
+// add for uart control +++
+STATIC VOID CmdOemUartOn(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+    DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemUartOn()\n"));
+    SetUartStatus(TRUE);
+    FastbootOkay("");
+}
+
+STATIC VOID CmdOemUartOff(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+    DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemUartOff()\n"));
+    SetUartStatus(FALSE);
+    FastbootOkay("");
+}
+// add for uart control ---
+
+// +++ ASUS_BSP : add for unbootable_counter and retry_counter
+STATIC VOID CmdOemResetSlotBUnbootableCount(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	EFI_STATUS Status = EFI_SUCCESS;
+
+	// +++ ASUS_BSP : add for fastboot permission
+	if(!ASUS_FASTBOOT_PERMISSION)
+	{
+		FastbootFail("permission denied");
+		return;
+	}
+	// --- ASUS_BSP : add for fastboot permission
+
+	Status = SetSlotBUnbootableCounter(0);
+
+	if (Status != EFI_SUCCESS)
+	{
+		FastbootFail("Failed to reset slot_b inbootable counter");
+	}
+	else
+	{
+		FastbootOkay("");
+	}
+}
+
+STATIC VOID CmdOemResetSlotBRetryCount(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	EFI_STATUS Status = EFI_SUCCESS;
+
+	// +++ ASUS_BSP : add for fastboot permission
+	if(!ASUS_FASTBOOT_PERMISSION)
+	{
+		FastbootFail("permission denied");
+		return;
+	}
+	// --- ASUS_BSP : add for fastboot permission
+
+	Status = SetSlotBRetryCounter(0);
+
+	if (Status != EFI_SUCCESS)
+	{
+		FastbootFail("Failed to reset slot_b retry counter");
+	}
+	else
+	{
+		FastbootOkay("");
+	}
+}
+
+STATIC VOID CmdOemResetSlotAUnbootableCount(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	EFI_STATUS Status = EFI_SUCCESS;
+
+	// +++ ASUS_BSP : add for fastboot permission
+	if(!ASUS_FASTBOOT_PERMISSION)
+	{
+		FastbootFail("permission denied");
+		return;
+	}
+	// --- ASUS_BSP : add for fastboot permission
+
+	Status = SetSlotAUnbootableCounter(0);
+
+	if (Status != EFI_SUCCESS)
+	{
+		FastbootFail("Failed to reset slot_a unbootable counter");
+	}
+	else
+	{
+		FastbootOkay("");
+	}
+}
+
+STATIC VOID CmdOemResetSlotARetryCount(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	EFI_STATUS Status = EFI_SUCCESS;
+
+	// +++ ASUS_BSP : add for fastboot permission
+	if(!ASUS_FASTBOOT_PERMISSION)
+	{
+		FastbootFail("permission denied");
+		return;
+	}
+	// --- ASUS_BSP : add for fastboot permission
+
+	Status = SetSlotARetryCounter(0);
+
+	if (Status != EFI_SUCCESS)
+	{
+		FastbootFail("Failed to reset slot_a retry counter");
+	}
+	else
+	{
+		FastbootOkay("");
+	}
+}
+// --- ASUS_BSP : add for unbootable_counter and retry_counter
+
+// +++ ASUS_BSP : add for lock count
+STATIC VOID CmdOemResetLockCount(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	EFI_STATUS Status = EFI_SUCCESS;
+
+	// +++ ASUS_BSP : add for fastboot permission
+	if(!ASUS_FASTBOOT_PERMISSION)
+	{
+		FastbootFail("permission denied");
+		return;
+	}
+	// --- ASUS_BSP : add for fastboot permission
+
+	Status = SetLockCounter(0);
+
+	if (Status != EFI_SUCCESS)
+	{
+		FastbootFail("Failed to reset lock count");
+	}
+	else
+	{
+		FastbootOkay("");
+	}
+}
+// --- ASUS_BSP : add for lock count
+
+// +++ ASUS_BSP : add for boot count
+STATIC VOID CmdOemResetBootCount(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	EFI_STATUS Status = EFI_SUCCESS;
+
+	// +++ ASUS_BSP : add for fastboot permission
+	if(!ASUS_FASTBOOT_PERMISSION)
+	{
+		FastbootFail("permission denied");
+		return;
+	}
+	// --- ASUS_BSP : add for fastboot permission
+
+	Status = SetBootCounter(0);
+
+	if (Status != EFI_SUCCESS)
+	{
+		FastbootFail("Failed to reset boot count");
+	}
+	else
+	{
+		FastbootOkay("");
+	}
+}
+// --- ASUS_BSP : add for boot count
+
+// +++ ASUS_BSP : add for write pmic reg value
+STATIC VOID CmdOemWritePmicReg(CONST CHAR8 *arg, VOID *data, UINT32 sz){
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	CHAR16 RegAddress[MAX_GPT_NAME_SIZE];
+	UINT64 RegValue;
+	UINT64 PmicIndex;
+	UINT64 WriteValue;
+	EFI_STATUS Status = EFI_SUCCESS;
+	AsciiStrToUnicodeStr((CHAR8 *)arg, RegAddress);
+
+	PmicIndex = AsciiStrHexToUint64(arg) >>24;
+	RegValue = (AsciiStrHexToUint64(arg) >>8 ) & 0xFFFF;
+	WriteValue = AsciiStrHexToUint64(arg) & 0xFF;
+
+	// +++ ASUS_BSP : add for fastboot permission
+	if(!ASUS_FASTBOOT_PERMISSION)
+	{
+		FastbootFail("permission denied");
+		return;
+	}
+	// --- ASUS_BSP : add for fastboot permission
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemWritePmicReg : RegAddress = %s, PmicIndex = %x, RegValue = %x, WriteValue = %x\n", RegAddress, PmicIndex, RegValue, WriteValue));
+	Status = WritePmicReg((UINT32)PmicIndex, (UINT32)RegValue, (UINT32)WriteValue);
+
+	if (Status != EFI_SUCCESS) {
+	DEBUG((EFI_D_ERROR, "[ABL] CmdOemWritePmicReg : Failed to write pmic reg value\n"));
+		FastbootFail ("Failed to write pmic reg value");
+	} else {
+	DEBUG((EFI_D_ERROR, "[ABL] CmdOemWritePmicReg : WritePmicReg EFI_SUCCESS\n"));
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "PmicIndex = %x , RegValue = %x , WriteValue = %x", PmicIndex, RegValue, WriteValue);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		FastbootOkay ("");
+	}
+
+	DEBUG((EFI_D_ERROR, "[ABL]  --- CmdOemWritePmicReg()\n\n"));
+}
+// --- ASUS_BSP : add for write pmic reg value
+
+// +++ ASUS_BSP : add for get pmic reg value
+STATIC VOID CmdOemGetPmicReg(CONST CHAR8 *arg, VOID *data, UINT32 sz){
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	CHAR16 RegAddress[MAX_GPT_NAME_SIZE];
+	UINT64 RegValue;
+	UINT64 PmicIndex;
+	EFI_STATUS Status = EFI_SUCCESS;
+	UINT8 value = 0;
+	AsciiStrToUnicodeStr((CHAR8 *)arg, RegAddress);
+
+	RegValue = AsciiStrHexToUint64(arg) & 0xFFFF;
+	PmicIndex = AsciiStrHexToUint64(arg) >> 16;
+
+	// +++ ASUS_BSP : add for fastboot permission
+	if(!ASUS_FASTBOOT_PERMISSION)
+	{
+		FastbootFail("permission denied");
+		return;
+	}
+	// --- ASUS_BSP : add for fastboot permission
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemGetPmicReg : RegAddress = %s, RegValue = %x, PmicIndex = %x\n", RegAddress, RegValue, PmicIndex));
+
+	Status = GetPmicReg((UINT32)PmicIndex, (UINT32)RegValue, &value);
+
+	if (Status != EFI_SUCCESS) {
+		DEBUG((EFI_D_ERROR, "[ABL] CmdOemGetPmicReg : Failed to get pmic reg value\n"));
+		FastbootFail ("Failed to get pmic reg value");
+	} else {
+		DEBUG((EFI_D_ERROR, "[ABL] CmdOemGetPmicReg : value = %x\n", value));
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "PmicIndex = %x , RegAddress %x = %x", PmicIndex, RegValue, value);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		FastbootOkay("");
+	}
+
+	DEBUG((EFI_D_ERROR, "[ABL]  --- CmdOemGetPmicReg()\n\n"));
+}
+// --- ASUS_BSP : add for get pmic reg value
+
+// +++ ASUS_BSP : add for ASUS dongle unlock
+/* Convert character to lowercase */
+STATIC int tolower (int c)
+{
+	if (('A' <= (c)) && ((c) <= 'Z'))
+	{
+		return (c - ('A' - 'a'));
+	}
+	return (c);
+}
+
+UINT16 shitfLeft(UINT16 p, int num)
+{
+	uint16 A , B , C;
+	A = p << num;
+	B = p >> (16 - num);
+	C = A | B ;
+	return C;
+}
+
+int algo1_A68(UINT16 *p1,UINT16 *p2,UINT16 *p3,UINT16 *p4)
+{
+	uint16 A,B,C,D;
+
+	A = *p1;
+	B = *p2;
+	C = *p3;
+	D = *p4;
+
+	A = A+D;
+	D = D+C;
+	C = C+B;
+	B = B+A;
+
+	A = shitfLeft(A,2);
+	B = shitfLeft(B,9);
+	C = shitfLeft(C,1);
+	D = shitfLeft(D,4);
+
+	A = A+6;
+	B = B+7;
+	C = C+0;
+	D = D+0;
+
+	A = A^B;
+	B = B^C;
+	C = C^D;
+	D = D^A;
+
+	*p1 =A;
+	*p2 =B;
+	*p3 =C;
+	*p4 =D;
+
+	return 0;
+}
+
+int algo2_A68(UINT16 *p1,UINT16 *p2,UINT16 *p3,UINT16 *p4)
+{
+	uint16 A,B,C,D;
+
+	A = *p1;
+	B = *p2;
+	C = *p3;
+	D = *p4;
+
+	A = A+D;
+	D = D+C;
+	C = C+B;
+	B = B+A;
+
+	A = shitfLeft(A,6);
+	B = shitfLeft(B,0);
+	C = shitfLeft(C,8);
+	D = shitfLeft(D,3);
+
+	A = A+3;
+	B = B+9;
+	C = C+2;
+	D = D+3;
+
+	A = A^B;
+	B = B^C;
+	C = C^D;
+	D = D^A;
+
+	*p1 =A;
+	*p2 =B;
+	*p3 =C;
+	*p4 =D;
+
+	return 0;
+}
+
+//call by cmd_oem_gen_hash()
+void main_algo(dongleAlgoType SIMLockAuthAlgoType, char *data,char *final_data)
+{
+	uint16 p1,p2,p3,p4;
+	unsigned char RecvData[33];
+	int i =0, j=0;
+	char AuthData[65];
+//	int m=0;
+
+	memset(RecvData, 0, sizeof(RecvData));
+	memcpy(RecvData, data, 32);
+	//RecvData[32]='\0';
+
+	while(i<32)
+	{
+		memcpy(&p1, RecvData+i, 2);
+		i+=2;
+		memcpy(&p2, RecvData+i, 2);
+		i+=2;
+		memcpy(&p3, RecvData+i, 2);
+		i+=2;
+		memcpy(&p4, RecvData+i, 2);
+		i+=2;
+
+		if(SIMLockAuthAlgoType == A68)
+		{
+			algo1_A68(&p1, &p2, &p3, &p4);
+		}
+		else{}
+
+		// Combine variables
+		memcpy(RecvData+j, &p4, 2);
+		j+=2;
+		memcpy(RecvData+j, &p3, 2);
+		j+=2;
+		memcpy(RecvData+j, &p2, 2);
+		j+=2;
+		memcpy(RecvData+j, &p1, 2);
+		j+=2;
+
+		// Dispatch Calculate variables
+		memcpy(&p1, RecvData+i, 2);
+		i+=2;
+		memcpy(&p2, RecvData+i, 2);
+		i+=2;
+		memcpy(&p3, RecvData+i, 2);
+		i+=2;
+		memcpy(&p4, RecvData+i, 2);
+		i+=2;
+
+		if(SIMLockAuthAlgoType == A68)
+		{
+			algo2_A68(&p1, &p2, &p3, &p4);
+		}
+		else{}
+
+		// Combine variables
+		memcpy(RecvData+j, &p4, 2);
+		j+=2;
+		memcpy(RecvData+j, &p3, 2);
+		j+=2;
+		memcpy(RecvData+j, &p2, 2);
+		j+=2;
+		memcpy(RecvData+j, &p1, 2);
+		j+=2;
+	}
+
+	memset(AuthData,0,sizeof(AuthData));
+
+	//for( m = 0; m < 32; m++ )
+	{
+		//sprintf( AuthData + m * 2, "%02x", RecvData[m] );
+		AsciiSPrint(AuthData,sizeof(AuthData) ,"%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+					RecvData[0],RecvData[1],RecvData[2],RecvData[3],RecvData[4],RecvData[5],RecvData[6],RecvData[7],
+					RecvData[8],RecvData[9],RecvData[10],RecvData[11],RecvData[12],RecvData[13],RecvData[14],RecvData[15],
+					RecvData[16],RecvData[17],RecvData[18],RecvData[19],RecvData[20],RecvData[21],RecvData[22],RecvData[23],
+					RecvData[24],RecvData[25],RecvData[26],RecvData[27],RecvData[28],RecvData[29],RecvData[30],RecvData[31]);
+
+	}
+
+	#if 0
+	DEBUG((EFI_D_ERROR, "[ABL] main_algo : AuthData=%a\n",AuthData));
+	DEBUG((EFI_D_ERROR, "[ABL] AuthData[65] = "));
+	for( i = 0; i < 65; i++ )
+	{
+		DEBUG((EFI_D_ERROR, " 0x%02x",AuthData[i]));
+	}
+	DEBUG((EFI_D_ERROR, "\n"));
+	#endif
+
+	//char final_data[65];
+	memcpy(final_data, AuthData ,64);
+}
+
+void cmd_oem_gen_hash(char * rand_buf, int key_select)
+{
+	//char response[256];
+	char final_data[65];
+	//struct MD5Context ctx;
+	MD5_CTX ctx;
+	unsigned char md5sum[16];
+	char output[33];
+	//char mmc_buf[512];
+	char buf_rand_key[41];
+	unsigned int i=0;
+
+	DEBUG((EFI_D_ERROR, "\n"));
+	DEBUG((EFI_D_ERROR, "[ABL] +++ cmd_oem_gen_hash (key_select=%d)\n", key_select));
+
+	#if 0	//dannio test
+	char rand_number[33]="08000260013335480527294877279139";
+	char key[9]="12345678";
+	sprintf(buf_rand_key, "%s%s", rand_number, key);
+	DEBUG((EFI_D_ERROR, "[ABL] buf_rand_key[%d] = %s\n", sizeof(buf_rand_key), buf_rand_key));
+	#endif
+
+	memset(buf_rand_key, 0, sizeof(buf_rand_key));
+	memcpy(buf_rand_key, rand_number, 32);
+
+	if(key_select == 1)
+		memcpy(&buf_rand_key[32], key, 9);
+	else if(key_select == 2)
+		memcpy(&buf_rand_key[32], key2, 9);
+
+	DEBUG((EFI_D_ERROR, "[ABL] buf_rand_key[%d] = %a\n", sizeof(buf_rand_key), buf_rand_key));
+
+	#if 0
+	DEBUG((EFI_D_ERROR, "[ABL] buf_rand_key[%d] = \n", sizeof(buf_rand_key)));
+	for(i = 0; i < sizeof(buf_rand_key); i++)
+	{
+		DEBUG((EFI_D_ERROR, " 0x%02x", buf_rand_key[i]));
+	}
+	DEBUG((EFI_D_ERROR, "\n"));
+	#endif
+
+	MD5Init(&ctx);
+	MD5Update(&ctx, (char*)buf_rand_key, (UINTN)strlen(buf_rand_key));
+	MD5Final(&ctx, md5sum);
+
+	#if 0
+	i=0;
+	DEBUG((EFI_D_ERROR, "[ABL] md5sum[%d] = ", sizeof(md5sum)));
+	for(i = 0; i < sizeof(md5sum); i++)
+	{
+		DEBUG((EFI_D_ERROR," 0x%02x", md5sum[i]));
+	}
+	DEBUG((EFI_D_ERROR,"\n"));
+	#endif
+
+	memset(output,0,33);
+	//for(i = 0; i < 16; i++)
+	{
+		//sprintf( output + i * 2, "%02x", md5sum[i]);
+		AsciiSPrint(output, sizeof(output), "%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+					md5sum[0],md5sum[1],md5sum[2],md5sum[3],md5sum[4],md5sum[5],md5sum[6],md5sum[7],md5sum[8],
+					md5sum[9],md5sum[10],md5sum[11],md5sum[12],md5sum[13],md5sum[14],md5sum[15]);
+	}
+
+	DEBUG((EFI_D_ERROR, "[ABL] output = %a\n", output));
+
+	#if 0
+	i=0;
+	DEBUG((EFI_D_ERROR,"[ABL] output[%d] = \n", sizeof(output)));
+	for(i = 0; i < sizeof(output); i++)
+	{
+		DEBUG((EFI_D_ERROR," 0x%02x", output[i]));
+	}
+	DEBUG((EFI_D_ERROR,"\n"));
+	#endif
+
+	//DEBUG((EFI_D_ERROR, "[ABL] lower : output[33] = "));
+
+	for(i = 0; i < 33; i++ )
+	{
+		output[i] = (char)tolower((int)output[i]);
+		//DEBUG((EFI_D_ERROR, " 0x%02x", output[i]));
+	}
+
+	DEBUG((EFI_D_ERROR, "[ABL] lower : output = %a\n", output));
+
+	#if 0
+	for(i = 0; i < 33; i++ )
+	{
+		DEBUG((EFI_D_ERROR, " 0x%02x", output[i]));
+	}
+	DEBUG((EFI_D_ERROR, "\n"));
+	#endif
+
+	memset(final_data , 0 ,65);
+	main_algo(A68, output, final_data);
+
+	#if 0
+	DEBUG((EFI_D_ERROR,"[ABL] final_data[%d] = \n", sizeof(final_data)));
+	for(i = 0; i < sizeof(final_data); i++)
+	{
+		DEBUG((EFI_D_ERROR,"%d 0x%02x\n", i, final_data[i]));
+	}
+	DEBUG((EFI_D_ERROR,"\n"));
+	#endif
+
+	for( i = 0; i < 65; i++ )
+	{
+		final_data[i] = (char)tolower((int)final_data[i]);
+	}
+
+	#if 0
+	for(i = 0; i < 65; i++ )
+	{
+		DEBUG((EFI_D_ERROR,"%d 0x%02x\n", i, final_data[i]));
+	}
+	DEBUG((EFI_D_ERROR, "\n"));
+	#endif
+
+	DEBUG((EFI_D_ERROR,"[ABL] before cmd_oem_gen_hash : calculate hash_buf [%d] = %a \n", sizeof(calculate_hash_buf), calculate_hash_buf));
+	memcpy(calculate_hash_buf, final_data, hash_buf_size);
+	DEBUG((EFI_D_ERROR,"[ABL] cmd_oem_gen_hash : final_data [%d] = %a \n", sizeof(final_data), final_data));
+	DEBUG((EFI_D_ERROR,"[ABL] cmd_oem_gen_hash : calculate hash_buf [%d] = %a \n", sizeof(calculate_hash_buf), calculate_hash_buf));
+	DEBUG((EFI_D_ERROR,"[ABL] -- cmd_oem_gen_hash()\n"));
+	DEBUG((EFI_D_ERROR,"\n"));
+}
+
+// +++ ASUS_BSP : add for WaterMask unlock
+STATIC VOID CmdOemGetIMEIAuth(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	CHAR8 resp[MAX_RSP_SIZE];
+	char TempChar[16]={};
+
+	DEBUG((EFI_D_ERROR, "\n"));
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemGetIMEIAuth()\n"));
+
+	ASUS_GEN_RANDOM_FLAG = 0;
+
+	memset(rand_number, 0, sizeof(rand_number));
+
+	GetIMEINum(TempChar, sizeof(TempChar));
+	memcpy(rand_number, TempChar, 15);
+
+	GetIMEI2Num(TempChar, sizeof(TempChar));
+	memcpy(&rand_number[15], TempChar, 15);
+	memcpy(&rand_number[30], "00", 2);
+
+	AsciiSPrint(resp, sizeof(resp), "==================================");
+	FastbootInfo(resp);
+	WaitForTransferComplete();
+
+	AsciiSPrint(resp, sizeof(resp), "IMEI Auth = %a ", rand_number);
+	FastbootInfo(resp);
+	WaitForTransferComplete();
+
+	AsciiSPrint(resp, sizeof(resp), "==================================");
+	FastbootInfo(resp);
+	WaitForTransferComplete();
+
+	ASUS_GEN_RANDOM_FLAG = 1;
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemGetIMEIAuth()\n"));
+	DEBUG((EFI_D_ERROR, "\n"));
+
+	FastbootOkay("");
+}
+
+STATIC VOID CmdOemAuthHash3(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	CHAR8 resp[MAX_RSP_SIZE];
+	DEBUG((EFI_D_ERROR, "\n"));
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemAuthHash3()\n"));
+
+	char TempChar[16]={};
+
+	memset(rand_number, 0, sizeof(rand_number));
+
+	GetIMEINum(TempChar, sizeof(TempChar));
+	memcpy(rand_number, TempChar, 15);
+
+	GetIMEI2Num(TempChar, sizeof(TempChar));
+	memcpy(&rand_number[15], TempChar, 15);
+	memcpy(&rand_number[30], "00", 2);
+
+	if (ASUS_GEN_RANDOM_FLAG)
+	{
+		cmd_oem_gen_hash(rand_number, 2);
+
+		AsciiSPrint(resp, sizeof(resp), "==================================");
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "\tCalculate hash =");
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "\t %s " ,&calculate_hash_buf[0]);
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "\t %s ", &calculate_hash_buf[16]);
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "\t %s ", &calculate_hash_buf[32]);
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "==================================");
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "==================================");
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "\tReceiver hash =");
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "\t %s ", &mmc_hash_buf[0]);
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "\t %s ", &mmc_hash_buf[16]);
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "\t %s ", &mmc_hash_buf[32]);
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "==================================");
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		if(AsciiStrnCmp(calculate_hash_buf, mmc_hash_buf, hash_buf_size) == 0)
+		{
+			DEBUG((EFI_D_ERROR,"[ABL] cmd_oem_auth_hash - Authorized hash : PASS \n"));
+
+			SetAuthorized3Value(TRUE);
+			IsAllowUnlock = 1;
+
+			if (!(IsAuthorized_3()))
+			{
+				DEBUG((EFI_D_ERROR, "[ABL] Unable to Write Device Info : IsAuthorized_3 = %d\n", IsAuthorized_3()));
+				FastbootFail("");
+				return;
+			}
+
+			IsAllowUnlock = 1;
+			AsciiSPrint(resp, sizeof(resp), "\tAuthorized Result : PASS");
+
+			FastbootInfo(resp);
+			WaitForTransferComplete();
+		}
+		else
+		{
+			DEBUG((EFI_D_ERROR, "[ABL] (ERROR) cmd_oem_auth_hash - Authorized hash : FAILED \n"));
+
+			SetAuthorized3Value(FALSE);
+			if (IsAuthorized_3())
+			{
+				DEBUG((EFI_D_ERROR, "[ABL] Unable to Write Device Info : IsAuthorized_3 = %r\n", IsAuthorized_3()));
+				FastbootFail("");
+				return;
+			}
+
+			AsciiSPrint(resp, sizeof(resp), "\tAuthorized Result : FAILED");
+			FastbootInfo(resp);
+			WaitForTransferComplete();
+		}
+	}
+	else
+	{
+		AsciiSPrint(resp, sizeof(resp), "fastboot oem get-imeiauth, first");
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+		FastbootFail("fastboot oem get-imeiauth, first");
+	}
+
+	// clean flag
+	ASUS_GEN_RANDOM_FLAG = 0;
+
+	FastbootOkay("");
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemAuthHash3()\n"));
+	DEBUG((EFI_D_ERROR, "\n"));
+}
+// --- ASUS_BSP : add for WaterMask unlock
+
+STATIC VOID CmdOemAuthHash2(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	CHAR8 resp[MAX_RSP_SIZE];
+	DEBUG((EFI_D_ERROR, "\n"));
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemAuthHash2()\n"));
+
+	if (ASUS_GEN_RANDOM_FLAG)
+	{
+		cmd_oem_gen_hash(rand_number, 1);
+
+		AsciiSPrint(resp, sizeof(resp), "==================================");
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "\tCalculate hash =");
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "\t %s " ,&calculate_hash_buf[0]);
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "\t %s ", &calculate_hash_buf[16]);
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "\t %s ", &calculate_hash_buf[32]);
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "==================================");
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "==================================");
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "\tReceiver hash =");
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "\t %s ", &mmc_hash_buf[0]);
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "\t %s ", &mmc_hash_buf[16]);
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "\t %s ", &mmc_hash_buf[32]);
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		AsciiSPrint(resp, sizeof(resp), "==================================");
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+
+		if(AsciiStrnCmp(calculate_hash_buf, mmc_hash_buf, hash_buf_size) == 0)
+		{
+			DEBUG((EFI_D_ERROR,"[ABL] cmd_oem_auth_hash - Authorized hash : PASS \n"));
+
+			SetAuthorized2Value(TRUE);
+			IsAllowUnlock = 1;
+
+			if (!(IsAuthorized_2()))
+			{
+				DEBUG((EFI_D_ERROR, "[ABL] Unable to Write Device Info : IsAuthorized_2 = %d\n", IsAuthorized_2()));
+				FastbootFail("");
+				return;
+			}
+
+			IsAllowUnlock = 1;
+			AsciiSPrint(resp, sizeof(resp), "\tAuthorized Result : PASS");
+
+			FastbootInfo(resp);
+			WaitForTransferComplete();
+		}
+		else
+		{
+			DEBUG((EFI_D_ERROR, "[ABL] (ERROR) cmd_oem_auth_hash - Authorized hash : FAILED \n"));
+
+			SetAuthorized2Value(FALSE);
+			if (IsAuthorized_2())
+			{
+				DEBUG((EFI_D_ERROR, "[ABL] Unable to Write Device Info : IsAuthorized_2 = %r\n", IsAuthorized_2()));
+				FastbootFail("");
+				return;
+			}
+
+			AsciiSPrint(resp, sizeof(resp), "\tAuthorized Result : FAILED");
+			FastbootInfo(resp);
+			WaitForTransferComplete();
+		}
+	}
+	else
+	{
+		AsciiSPrint(resp, sizeof(resp), "fastboot oem gen-random, first");
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+		FastbootFail("fastboot oem gen-random, first");
+	}
+
+	// clean flag
+	ASUS_GEN_RANDOM_FLAG = 0;
+
+	FastbootOkay("");
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemAuthHash2()\n"));
+	DEBUG((EFI_D_ERROR, "\n"));
+}
+
+STATIC VOID CmdOemAuthHash(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	CHAR8 resp[MAX_RSP_SIZE];
+	DEBUG((EFI_D_ERROR, "\n"));
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemAuthHash()\n"));
+	
+	// gen random numbers
+	random_num_generator(rand_number);
+
+	// gen hash numbers
+	cmd_oem_gen_hash(rand_number, 1);
+
+	AsciiSPrint(resp, sizeof(resp), "==================================");
+	FastbootInfo(resp);
+	WaitForTransferComplete();
+
+	AsciiSPrint(resp, sizeof(resp), "\tCalculate hash =");
+	FastbootInfo(resp);
+	WaitForTransferComplete();
+
+	AsciiSPrint(resp, sizeof(resp), "\t %s ", &calculate_hash_buf[0]);
+	FastbootInfo(resp);
+	WaitForTransferComplete();
+
+	AsciiSPrint(resp, sizeof(resp), "\t %s ", &calculate_hash_buf[16]);
+	FastbootInfo(resp);
+	WaitForTransferComplete();
+
+	AsciiSPrint(resp, sizeof(resp), "\t %s ", &calculate_hash_buf[32]);
+	FastbootInfo(resp);
+	WaitForTransferComplete();
+
+	AsciiSPrint(resp, sizeof(resp), "==================================");
+	FastbootInfo(resp);
+	WaitForTransferComplete();
+
+	//cmd_oem_mmc_read_hash("asuskey2");
+
+	AsciiSPrint(resp, sizeof(resp), "==================================");
+	FastbootInfo(resp);
+	WaitForTransferComplete();
+
+	AsciiSPrint(resp, sizeof(resp), "\tReceiver hash =");
+	FastbootInfo(resp);
+	WaitForTransferComplete();
+
+	AsciiSPrint(resp, sizeof(resp), "\t %s ", &mmc_hash_buf[0]);
+	FastbootInfo(resp);
+	WaitForTransferComplete();
+
+	AsciiSPrint(resp, sizeof(resp), "\t %s ", &mmc_hash_buf[16]);
+	FastbootInfo(resp);
+	WaitForTransferComplete();
+
+	AsciiSPrint(resp, sizeof(resp), "\t %s ", &mmc_hash_buf[32]);
+	FastbootInfo(resp);
+	WaitForTransferComplete();
+
+	AsciiSPrint(resp, sizeof(resp), "==================================");
+	FastbootInfo(resp);
+	WaitForTransferComplete();
+
+	// verify hash file
+	if(AsciiStrnCmp(calculate_hash_buf, mmc_hash_buf, hash_buf_size) == 0)
+	{
+		DEBUG((EFI_D_ERROR,"[ABL] cmd_oem_auth_hash - Authorized hash : PASS \n"));
+
+		SetAuthorizedValue(TRUE);
+		IsAllowUnlock = 1;
+
+		if (!(IsAuthorized()))
+		{
+			DEBUG((EFI_D_ERROR, "[ABL] Unable to Write Device Info : IsAuthorized = %d\n", IsAuthorized()));
+			FastbootFail("");
+			return;
+		}
+
+#ifdef ASUS_AI2205_BUILD		
+		SetDeviceDebugUnlockValue(TRUE);
+		if(!(IsDebugUnlocked())){
+			DEBUG((EFI_D_ERROR, "[ABL] Unable to Write Device Info : IsDebugUnlocked = %d\n", IsDebugUnlocked()));
+			FastbootFail("");
+			return;
+		}
+#endif
+
+		IsAllowUnlock = 1;
+		AsciiSPrint(resp, sizeof(resp), "\tAuthorized Result : PASS");
+
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+	}
+	else
+	{
+		DEBUG((EFI_D_ERROR, "[ABL] (ERROR) cmd_oem_auth_hash - Authorized hash : FAILED \n"));
+
+		SetAuthorizedValue(FALSE);
+		if (IsAuthorized())
+		{
+			DEBUG((EFI_D_ERROR, "[ABL] Unable to Write Device Info : IsAuthorized = %r\n", IsAuthorized()));
+			FastbootFail("");
+			return;
+		}
+
+#ifdef ASUS_AI2205_BUILD
+		SetDeviceDebugUnlockValue(FALSE);
+		if(IsDebugUnlocked()){
+			DEBUG((EFI_D_ERROR, "[ABL] Unable to Write Device Info : IsDebugUnlocked = %d\n", IsDebugUnlocked()));
+			FastbootFail("");
+			return;
+		}
+#endif
+
+		AsciiSPrint(resp, sizeof(resp), "\tAuthorized Result : FAILED");
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+	}
+
+	// clean flag
+	ASUS_GEN_RANDOM_FLAG = 0;
+
+	FastbootOkay("");
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemAuthHash()\n"));
+	DEBUG((EFI_D_ERROR, "\n"));
+}
+
+void random_num_generator(char *rand_num)
+{
+	EFI_STATUS Status = EFI_SUCCESS;
+	UINT32 TimerCount = 0;
+	UINT32 UUID = 0;
+	UINT32 tmp = 0;
+	char time_buf[32];
+	MD5_CTX Md5Ctx;
+	UINT8 md5sum[16];
+	int i=0;
+	char output[33];
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ random_num_generator()\n"));
+
+#ifdef AI2201_USE_RANDON_NUM_UNLOCK
+	TimerCount = (UINT32) GetPerformanceCounter();
+#endif
+	Status = GetSerialNum(&UUID);
+
+	if (Status != EFI_SUCCESS)
+	{
+		DEBUG((EFI_D_ERROR, "[ABL] Failed to GetSerialNum() \n"));
+		return;
+	}
+	else
+	{
+		DEBUG((EFI_D_ERROR, "[ABL] CmdOemGenRNG : UUID : %x\n", UUID));
+		DEBUG((EFI_D_ERROR, "[ABL] CmdOemGenRNG : TimerCount : %d\n", TimerCount));
+
+		tmp = UUID + TimerCount;
+		DEBUG((EFI_D_ERROR, "[ABL] CmdOemGenRNG : tmp : %d\n", tmp));
+
+		AsciiSPrint(time_buf, sizeof(time_buf), "%x", tmp);
+
+		DEBUG((EFI_D_ERROR, "[ABL] CmdOemGenRNG : time_buf : %a\n", time_buf));
+
+		Status = MD5Init (&Md5Ctx);
+		if (Status != EFI_SUCCESS)
+		{
+			DEBUG((EFI_D_ERROR, "[ABL] Failed to MD5Init() \n"));
+			return;
+		}
+
+		MD5Update(&Md5Ctx, (char *) time_buf, (UINTN)strlen( time_buf ));
+		MD5Final(&Md5Ctx, md5sum);
+
+		#if 0
+		DEBUG((EFI_D_ERROR, "[ABL] CmdOemGenRNG : md5sum=%a\n", md5sum));
+		DEBUG((EFI_D_ERROR, "[ABL] md5sum[16]="));
+		for( i = 0; i < 16; i++ )
+		{
+			DEBUG((EFI_D_ERROR, " 0x%02x", md5sum[i]));
+		}
+		DEBUG((EFI_D_ERROR, "\n"));
+		#endif
+
+		memset(output, 0, sizeof(output));
+
+		//for( i = 0; i < 16; i++ )
+		{
+			//sprintf(output + i * 2, "%02x", md5sum[i] );
+			AsciiSPrint(output, sizeof(output), "%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+						md5sum[0],md5sum[1],md5sum[2],md5sum[3],md5sum[4],md5sum[5],md5sum[6],md5sum[7],md5sum[8],
+						md5sum[9],md5sum[10],md5sum[11],md5sum[12],md5sum[13],md5sum[14],md5sum[15]);
+		}
+
+		DEBUG((EFI_D_ERROR, "[ABL] CmdOemGenRNG : output=%a\n", output));
+
+		#if 0
+		DEBUG((EFI_D_ERROR, "[ABL] output[33] = "));
+		for( i = 0; i < 33; i++ )
+		{
+			DEBUG((EFI_D_ERROR, " 0x%02x", output[i]));
+		}
+		#endif
+
+		memset(rand_num, 0, 32);
+
+		//rand_number[]
+		memcpy(rand_num, output, 32);
+		rand_num[32]='\0';
+
+		for( i = 0; i < 33; i++ )
+		{
+			rand_num[i] = (char)tolower((int)rand_num[i]);
+			//DEBUG((EFI_D_ERROR, " 0x%02x",rand_num[i]));
+		}
+
+		DEBUG((EFI_D_ERROR, "[ABL] CmdOemGenRNG : rand_num=%a\n", rand_num));
+
+		#if 0
+		DEBUG((EFI_D_ERROR, "[ABL] CmdOemGenRNG : rand_num=%a\n", rand_num));
+		DEBUG((EFI_D_ERROR, "rand_num[32]="));
+		for( i = 0; i < 16; i++ )
+		{
+			DEBUG((EFI_D_ERROR, "%02x",rand_num[i]));
+		}
+		DEBUG((EFI_D_ERROR, "\n"));
+		#endif
+	}
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- random_num_generator()\n"));
+	return;
+}
+
+STATIC VOID CmdOemGenRNG(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	CHAR8 resp[MAX_RSP_SIZE];
+
+	DEBUG((EFI_D_ERROR, "\n"));
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemGenRNG()\n"));
+
+	ASUS_GEN_RANDOM_FLAG = 0;
+
+	random_num_generator(rand_number);
+
+	AsciiSPrint(resp, sizeof(resp), "==================================");
+	FastbootInfo(resp);
+	WaitForTransferComplete();
+
+	AsciiSPrint(resp, sizeof(resp), "Random Num = %a ", rand_number);
+	FastbootInfo(resp);
+	WaitForTransferComplete();
+
+	AsciiSPrint(resp, sizeof(resp), "==================================");
+	FastbootInfo(resp);
+	WaitForTransferComplete();
+
+	ASUS_GEN_RANDOM_FLAG = 1;
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemGenRNG()\n"));
+	DEBUG((EFI_D_ERROR, "\n"));
+
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for ASUS dongle unlock
+
+// +++ ASUS_BSP : add for sha256 function
+STATIC VOID CmdOemSha256(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	EFI_STATUS Status = EFI_SUCCESS;
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+
+	DEBUG((EFI_D_ERROR, "[ABL]  +++ CmdOemSha256(%d)\n",sz));
+	UINT8 hash[32] = {0};
+	memset(hash,0,sizeof(hash));
+
+	#if 1
+	UINT32 i=0;
+	UINT8 * buf = NULL;
+	buf = (UINT8*)data;
+
+	DEBUG((EFI_D_ERROR, "\n"));
+	DEBUG((EFI_D_ERROR, "[ABL] CmdOemSha256 - data[%d] = \n",sz));
+	for(i=0;i<sz;i++)
+	{
+		DEBUG((EFI_D_ERROR, " %02x",buf[i] ));
+	}
+	DEBUG((EFI_D_ERROR, "\n"));
+	#endif
+
+	#if 0
+	CHAR8 asus_key_info[16]={0};	// Get SSN
+
+	AsciiSPrint(asus_key_info, sizeof(asus_key_info), "%a", "G6AZCY03S376EYA");
+	DEBUG((EFI_D_ERROR, "[ABL]  CmdOemSha256(SSN=%a)\n",asus_key_info));
+	Status = get_image_hash((UINT8*)asus_key_info,15,hash,sizeof(hash),VB_SHA256);
+
+	#else
+	Status = get_image_hash((UINT8*)data,(UINTN)sz,hash,sizeof(hash),VB_SHA256);
+	#endif
+
+	if (Status != EFI_SUCCESS)
+	{
+		DEBUG((EFI_D_ERROR, "[ABL] (ERROR) get_image_hash : FAIL (%d)\n", Status));
+		FastbootFail("SHA256 : FAIL");
+		return;
+	}
+
+	//0~31
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+										   hash[0],hash[1],hash[2],hash[3],hash[4],hash[5],hash[6],hash[7],hash[8],hash[9],
+										   hash[10],hash[11],hash[12],hash[13],hash[14],hash[15],hash[15]);
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	// 32~64
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+										   hash[16],hash[17],hash[18],hash[19],hash[20],hash[21],hash[22],hash[23],hash[24],
+										   hash[25],hash[26],hash[27],hash[28],hash[29],hash[30],hash[31]);
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	//FastbootOkay("");
+	DEBUG((EFI_D_ERROR, "[ABL]  --- CmdOemSha256()\n"));
+}
+// --- ASUS_BSP : add for sha256 function
+
+// +++ ASUS_BSP : add for get partition hash
+STATIC VOID CmdOemCalculatePtCrc32(CONST CHAR8 *arg, VOID *data, UINT32 sz){
+	CHAR16 PartitionName[MAX_GPT_NAME_SIZE];
+	unsigned long calculatedCRC=0xFFFFFFFF;
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemCalculatePtCrc32()\n"));
+	AsciiStrToUnicodeStr((CHAR8 *)arg, PartitionName);
+	calculatedCRC = AsusCalculatePtCrc32((CHAR16 *)&PartitionName);
+	DEBUG((EFI_D_INFO, "calculatedCRC = %x\n", calculatedCRC));
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "%x", calculatedCRC);
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	DEBUG((EFI_D_ERROR, "[ABL]  --- CmdOemCalculatePtCrc32()\n"));
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for get partition hash
+
+// +++ ASUS_BSP : add for user unlock
+STATIC VOID CmdRsaTest(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	UINT32 crypt_type = 0;
+
+	crypt_type = (UINT32)AsciiStrHexToUint64(arg)&0xFFFF;
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdRsaTest(%d)\n", crypt_type));
+
+	if(crypt_type > RAW_PKG_LOCK)
+	{
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "NON-SUPPORT CRYPT TYPE : %d", crypt_type);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		FastbootFail("Verify : FAIL");
+		goto out;
+	}
+
+	if(is_unlock(crypt_type))
+	{
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Verify : PASS");
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		FastbootOkay("");
+	}
+	else
+	{
+		FastbootFail("Verify : FAIL");
+	}
+
+out:
+	DEBUG((EFI_D_ERROR, "[ABL]  --- CmdRsaTest()\n"));
+}
+// --- ASUS_BSP : add for user unlock
+
+// +++ ASUS_BSP : add for oem ASUS CSC lock device
+STATIC VOID CmdOemAsusCscLk(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	UINT32 lock_count;
+
+	if( IsUnlocked() == FALSE)
+	{
+		FastbootFail("Device already : locked!");
+		return;
+	}
+
+	SetDeviceUnlockValue(UNLOCK, FALSE);
+	SetDeviceUnlockValue(UNLOCK_CRITICAL, FALSE);
+
+	lock_count = GetLockCounter();
+	lock_count++;
+	SetLockCounter(lock_count);
+
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for oem ASUS CSC lock device
+
+// +++ ASUS_BSP : add for Check Setup Wizard
+STATIC VOID CmdOemCheckSetupWizard(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	sys_info sysinfo;
+	char sysinfo_setupwizard[6];
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemCheckSetupWizard()\n"));
+
+	if(read_sysinfo(&sysinfo) == EFI_SUCCESS)
+	{
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "setupwizard: %a", sysinfo.setupwizard);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		AsciiSPrint(sysinfo_setupwizard, sizeof(sysinfo_setupwizard), "%a", sysinfo.setupwizard);
+		if(!AsciiStrnCmp(sysinfo_setupwizard, "true", StrLen (L"true")))
+		{
+			DEBUG((EFI_D_ERROR, "[ABL] CmdOemCheckSetupWizard() -- setupwizard is true\n"));
+			FastbootOkay("");
+		}
+		else
+		{
+			DEBUG((EFI_D_ERROR, "[ABL] CmdOemCheckSetupWizard() -- setupwizard is false\n"));
+			FastbootOkay("");
+		}
+	}
+	else
+	{
+		FastbootFail("read sysinfo fail");
+	}
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemCheckSetupWizard()\n"));
+}
+
+BOOLEAN CheckSetupWizard(void)
+{
+	sys_info sysinfo;
+	char sysinfo_setupwizard[6];
+	BOOLEAN check_setupwizard = FALSE;
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CheckSetupWizard()\n"));
+
+	if(read_sysinfo(&sysinfo) == EFI_SUCCESS)
+	{
+		AsciiSPrint(sysinfo_setupwizard, sizeof(sysinfo_setupwizard), "%a", sysinfo.setupwizard);
+		if(!AsciiStrnCmp(sysinfo_setupwizard, "true", StrLen (L"true")))
+		{
+			DEBUG((EFI_D_ERROR, "[ABL] CheckSetupWizard() -- setupwizard is true\n"));
+			check_setupwizard = TRUE;
+		}
+		else
+		{
+			DEBUG((EFI_D_ERROR, "[ABL] CheckSetupWizard() -- setupwizard is false\n"));
+			check_setupwizard = FALSE;
+		}
+	}
+	else
+	{
+		DEBUG((EFI_D_ERROR, "[ABL] CheckSetupWizard() -- read sysinfo fail!!\n"));
+		check_setupwizard = FALSE;
+	}
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CheckSetupWizard()\n"));
+	return check_setupwizard;
+}
+// --- ASUS_BSP : add for Check Setup Wizard
+
+// +++ ASUS_BSP : add for draw barcode
+STATIC VOID CmdOemDrawBarcode(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	// TODO
+	//	It should show ISN number
+	//
+	CHAR8 TempCHAR[MAX_RSP_SIZE];
+	GetISNNum(TempCHAR, sizeof(TempCHAR)); // +++ ASUS_BSP : Add for isn info
+
+	// +++ ASUS_BSP : add for Check Setup Wizard
+	if(CheckSetupWizard() == TRUE){
+		DrawBarCode(TempCHAR);
+		FastbootOkay("");
+	}else{
+		FastbootFail("Setupwizard is false!!");
+	}
+	// --- ASUS_BSP : add for Check Setup Wizard
+}
+//--- ASUS_BSP : add for draw barcode 
+
+// +++ ASUS_BSP : add for get fuse info
+STATIC VOID CmdOemFuseInfo(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	UINT32 SecureState = 0;
+
+	SecureState = ReadSecurityState ();
+	if (SecureState == ERROR_SECURITY_STATE) {
+		DEBUG ((EFI_D_ERROR, "ReadSecurityState failed!\n"));
+		FastbootFail("ReadSecurityState failed!");
+	}
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "=== FUSE Info ===");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Secure_state = %x\n", SecureState);
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Bit#0_SECBOOT_FUSE = %x (must be 0)", (CHECK_BIT(SecureState, SECBOOT_FUSE) >> (SECBOOT_FUSE)));
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Bit#1 SHK_FUSE = %x (must be 0)", (CHECK_BIT(SecureState, SHK_FUSE) >> (SHK_FUSE)));
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Bit#2 DEBUG_DISABLED_FUSE = %x ", (CHECK_BIT(SecureState, DEBUG_DISABLED_FUSE) >> (DEBUG_DISABLED_FUSE)));
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Bit#3 ANTI_ROLLBACK_FUSE = %x ", (CHECK_BIT(SecureState, ANTI_ROLLBACK_FUSE) >> (ANTI_ROLLBACK_FUSE)));
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Bit#4 FEC_ENABLED_FUSE = %x ", (CHECK_BIT(SecureState, FEC_ENABLED_FUSE) >> (FEC_ENABLED_FUSE)));
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Bit#5 RPMB_ENABLED_FUS = %x (must be 0)", (CHECK_BIT(SecureState, RPMB_ENABLED_FUSE) >> (RPMB_ENABLED_FUSE)));
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Bit#6 DEBUG_RE_ENABLED_FUSE = %x (must be 1)", (CHECK_BIT(SecureState, DEBUG_RE_ENABLED_FUSE) >> (DEBUG_RE_ENABLED_FUSE)));
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Bit#7 FEC_ENABLED_FUSE = %x ", (CHECK_BIT(SecureState, FEC_ENABLED_FUSE) >> (FEC_ENABLED_FUSE)));
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Bit#8 TZ_DEBUG_FUSE = %x (must be 0)", (CHECK_BIT(SecureState, TZ_DEBUG_FUSE) >> (TZ_DEBUG_FUSE)));
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Bit#9 MSS_DEBUG_FUSE = %x (must be 0)", (CHECK_BIT(SecureState, MSS_DEBUG_FUSE) >> (MSS_DEBUG_FUSE)));
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Bit#10 CP_DEBUG_FUSE = %x (must be 0)", (CHECK_BIT(SecureState, CP_DEBUG_FUSE) >> (CP_DEBUG_FUSE)));
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for get fuse info
+
+// +++ ASUS_BSP : add for check fuse
+STATIC VOID CmdOemCheckFuse(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+
+	if(IsSecureBootEnabled())
+	{
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "FUSED");
+	}
+	else
+	{
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "NON-FUSED");
+	}
+
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for check fuse
+
+// +++ ASUS_BSP : add for check fuse with no rpmb
+STATIC VOID CmdOemCheckFuseNoRpmb(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+#ifdef ASUS_AI2205_BUILD
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	EFI_STATUS Status = EFI_SUCCESS;
+	BOOLEAN SecureDeviceNoRpmb = FALSE;
+
+	Status = IsSecureDeviceNoCheckRpmb(&SecureDeviceNoRpmb);
+	if (Status != EFI_SUCCESS) {
+		DEBUG ((EFI_D_ERROR, "VB: Failed read device state: %r\n", Status));
+	}
+
+	if(SecureDeviceNoRpmb)
+	{
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "FUSED (no check rpmb)");
+	}
+	else
+	{
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "NON-FUSED");
+	}
+
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+#endif
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for check fuse with no rpmb
+
+// +++ ASUS_BSP : add for enter shipping mode
+STATIC VOID CmdOemEnterShippingMode(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	EFI_STATUS Status = EFI_SUCCESS;
+
+	Status = EnterShippingMode();
+
+	if (Status != EFI_SUCCESS)
+	{
+		FastbootFail("Failed to enter shipmode");
+	}
+	else
+	{
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "EnterShippingMode() is PASS");
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		FastbootOkay("");
+
+	}
+}
+// --- ASUS_BSP : add for enter shipping mode
+
+// +++ ASUS_BSP : add for check s3 reset type cmd
+STATIC VOID CmdOemCheckS3(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+#if 0
+	EFI_STATUS Status = EFI_SUCCESS;
+#endif
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	UINT8 value = 0;
+	UINT8 HW_ID = 0;
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "======== Check S3 pm_app_pon_reset_source_type ========\n");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	GetPmicReg(0x0, 0x874, &value);
+#ifdef ASUS_AI2205_BUILD
+	HW_ID = Get_HW_ID();
+#endif
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "HW Stage : %x", HW_ID);
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Reg_0x874 : %x\n", value);
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for check s3 reset type cmd
+
+void fastboot_send_data(char *code, size_t Reason)
+{
+	EFI_STATUS Status;
+	if (Reason > 0)
+	{
+	  	Status=GetFastbootDeviceData ()->UsbDeviceProtocol->Send (
+		  	ENDPOINT_OUT, Reason,code);
+		DEBUG ((EFI_D_ERROR, "data sending\n"));
+		if (Status != EFI_SUCCESS) {
+			DEBUG ((EFI_D_ERROR, "data send error\n"));
+			return ;
+		}
+	}
+}
+
+void fastboot_data(size_t code)
+{
+  	AsciiSPrint (GetFastbootDeviceData ()->gTxBuffer, MAX_RSP_SIZE, "DATA%08x", code);
+	DEBUG ((EFI_D_ERROR, "Data size =0x %08x\n",code,code));
+  	GetFastbootDeviceData ()->UsbDeviceProtocol->Send (
+      	ENDPOINT_OUT, AsciiStrLen (GetFastbootDeviceData ()->gTxBuffer),
+      	GetFastbootDeviceData ()->gTxBuffer);
+}
+//use rules:fastboot oem partition name size   
+//name : partition name
+//size : this parameter can be NULL
+//		 if imagesize is NULL, it will be equate to partition size 
+STATIC VOID CmdPartition(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	int flag = 0;
+	uint64_t result = 0;
+	uint64_t len_r = 0;
+	uint64_t len = 0;
+	uint64_t block_size;
+	uint64_t size_per_read=0;
+	uint64_t remainder = 0;
+	UINT64 Offset=0;
+	CHAR16 SlotSuffix[MAX_SLOT_SUFFIX_SZ];
+	BOOLEAN HasSlot = FALSE;
+	UINTN PartitionSize=0;
+	EFI_STATUS Status;
+  	EFI_BLOCK_IO_PROTOCOL *BlockIo = NULL;
+ 	EFI_HANDLE *Handle = NULL;
+	BOOLEAN MultiSlotBoot = PartitionHasMultiSlot ((CONST CHAR16 *)L"boot");
+	CHAR16 PartitionName[MAX_GPT_NAME_SIZE];
+	int image_len = 0;
+	CHAR8 *Ptr = NULL;
+	int max_usb_data_sz = 1024 * 1024 * 1024;
+	Ptr=AsciiStrStr(arg+1, " ");
+	if(Ptr != NULL)	
+		image_len=strtoul(Ptr,0,0);
+	DEBUG((EFI_D_ERROR, "input size =%d\n",image_len));
+
+	asus_strtok((char *)arg+1, " ");
+	AsciiStrToUnicodeStr (arg+1, PartitionName);//字符串
+	if (!PartitionName)
+	{
+		DEBUG((EFI_D_ERROR, "Param is NULL, Please Input Partition Param\n"));
+		FastbootFail("Param is NULL, Please Input Partition Param");
+		return;
+	}
+
+	if (MultiSlotBoot)
+	{
+		HasSlot = GetPartitionHasSlot (PartitionName, ARRAY_SIZE (PartitionName), SlotSuffix,
+		                               MAX_SLOT_SUFFIX_SZ);
+	}
+	
+	if(HasSlot==FALSE)
+	{
+		DEBUG ((EFI_D_ERROR, " %s no _a or _b\n", PartitionName));
+	}
+  	Status = PartitionGetInfo (PartitionName, &BlockIo, &Handle);//获得handle，blockio
+
+ 	if (Status != EFI_SUCCESS) 
+	{	
+		DEBUG ((EFI_D_ERROR, "partiton %s found error \n", PartitionName));
+		FastbootFail("Param not found, Please Input Partition Param");
+    	return ;
+	}
+
+	if (!BlockIo) 
+	{
+		DEBUG ((EFI_D_ERROR, "BlockIo for %s is corrupted\n", PartitionName));
+		return ;
+  	}
+
+	if (!Handle) 
+	{
+		DEBUG ((EFI_D_ERROR, "EFI handle for %s is corrupted\n", PartitionName));
+		return ;
+  	}
+
+	if(image_len)
+	{
+		PartitionSize = image_len;
+	}
+	else
+	{
+		PartitionSize = (BlockIo->Media->LastBlock + 1) * (BlockIo->Media->BlockSize);
+		DEBUG ((EFI_D_ERROR, "Partition size = %llu\n", PartitionSize));
+	}
+
+	if(PartitionSize <= 0)
+	{	
+		DEBUG ((EFI_D_ERROR, " %s size error\n", PartitionName));
+		return ;
+	}
+	block_size = BlockIo->Media->BlockSize;
+	size_per_read = block_size*1024*8;//4096*1024*8=32MB
+	len = PartitionSize;
+
+	remainder = len % block_size;
+    if (remainder)
+	{
+		len += block_size - remainder;
+	}
+
+	len_r = len;
+	if(len_r)
+		DEBUG ((EFI_D_ERROR, "will read size %d",len_r));
+
+	if(!StrCmp(PartitionName,L"super"))
+	{
+		while(PartitionSize>max_usb_data_sz){
+			len_r=max_usb_data_sz;
+			fastboot_data(len_r);
+			WaitForTransferComplete();
+			while(len_r >= size_per_read)
+			{
+				Status = BlockIo->ReadBlocks (BlockIo,
+				                         BlockIo->Media->MediaId,
+				                         Offset+result,
+				                         size_per_read,
+				                         mDataBuffer);
+			 	if (Status != EFI_SUCCESS)
+				{	
+					DEBUG ((EFI_D_ERROR, "partiton %s read error \n", PartitionName));
+					FastbootFail("Partition read error, Please Input correctly size");
+					return ;
+				}
+				len_r -= size_per_read;
+				result += size_per_read / BlockIo->Media->BlockSize;
+				DEBUG ((EFI_D_ERROR, "Send size=%d data\n", size_per_read));
+				fastboot_send_data((void *)mDataBuffer,size_per_read);
+				WaitForTransferComplete();
+			}
+			if(len_r>0)
+			{
+				Status = BlockIo->ReadBlocks (BlockIo,
+				                         BlockIo->Media->MediaId,
+				                         result,
+				                         len_r,
+				                         mDataBuffer);
+			 	if (Status != EFI_SUCCESS)
+				{	
+					DEBUG ((EFI_D_ERROR, "partiton %s read error \n", PartitionName));
+					FastbootFail("Partition read error, Please Input correctly size");
+					return ;
+				}
+				
+				if (remainder)
+					len_r -= block_size - remainder;
+
+				result += len_r / BlockIo->Media->BlockSize;
+				DEBUG ((EFI_D_ERROR, "Send size=%d data\n", len_r));
+				fastboot_send_data((void *)mDataBuffer, len_r);
+				WaitForTransferComplete();
+
+				if (Status != EFI_SUCCESS)
+				{	
+					DEBUG ((EFI_D_ERROR, "error\n"));
+					return ;
+				}
+			}
+			PartitionSize -= max_usb_data_sz;
+		}
+    	len_r=PartitionSize;
+	}	
+
+	if(len_r >= size_per_read)
+	{
+		flag=1;
+		fastboot_data(len_r);
+		WaitForTransferComplete();
+	}
+	while(len_r >= size_per_read)
+	{
+		Status = BlockIo->ReadBlocks (BlockIo,
+                                 BlockIo->Media->MediaId,
+                                 Offset+result,
+                                 size_per_read,
+                                 mDataBuffer);
+	 	if (Status != EFI_SUCCESS)
+		{	
+			DEBUG ((EFI_D_ERROR, "partiton %s read error \n", PartitionName));
+			FastbootFail("Partition read error, Please Input correctly size");
+			return ;
+		}
+		len_r -= size_per_read;
+		result += size_per_read / BlockIo->Media->BlockSize;
+		DEBUG ((EFI_D_ERROR, "Send size=%d data\n", size_per_read));
+		fastboot_send_data((void *)mDataBuffer,size_per_read);
+		WaitForTransferComplete();
+	}
+
+    if(len_r>0)
+	{
+		Status = BlockIo->ReadBlocks (BlockIo,
+                                 BlockIo->Media->MediaId,
+                                 result,
+                                 len_r,
+                                 mDataBuffer);
+	 	if (Status != EFI_SUCCESS)
+		{	
+			DEBUG ((EFI_D_ERROR, "partiton %s read errors%d \n", PartitionName,len_r));
+			FastbootFail("Partition read error, Please Input correctly size");
+			return ;
+		}
+
+		if (remainder)
+			len_r -= block_size - remainder;
+		if(flag == 0)
+		{
+			fastboot_data(len_r);
+			WaitForTransferComplete();
+		}
+		DEBUG ((EFI_D_ERROR, "Send size=%d data\n", len_r));
+		fastboot_send_data((void *)mDataBuffer, len_r);
+		WaitForTransferComplete();
+	}
+	DEBUG ((EFI_D_ERROR, "cmd success\n"));
+    FastbootOkay("");
+}
+
+// +++ ASUS_BSP : add for enter emergency download mode cmd
+STATIC VOID CmdOemEnterDLoadMode(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	if(!ASUS_FASTBOOT_PERMISSION)
+	{
+		FastbootFail("permission denied");
+		return;
+	}
+	
+	DEBUG((EFI_D_INFO, "[ABL] Rebooting the device into emergency dload mode\n"));
+	FastbootOkay("");
+	RebootDevice(EMERGENCY_DLOAD);
+
+	// Shouldn't get here
+	FastbootFail("Failed to reboot");
+}
+// --- ASUS_BSP : add for enter emergency download mode cmd
+
+// +++ ASUS_BSP : add for logcat-asdf sevices
+STATIC VOID CmdOemLogcatAsdfOn(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+    DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemLogcatAsdfOn()\n"));
+    SetLogcatAsdfOn(TRUE);
+    FastbootOkay("");
+}
+
+STATIC VOID CmdOemLogcatAsdfOff(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+    DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemLogcatAsdfOff()\n"));
+    SetLogcatAsdfOn(FALSE);
+    FastbootOkay("");
+}
+// --- ASUS_BSP : add for logcat-asdf sevices
+
+// +++ ASUS_BSP : add for set permissive cmdline
+STATIC VOID CmdOemSetPermissive(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+
+#ifndef ABL_FTM
+	DEBUG((EFI_D_INFO, "[ABL] Rebooting the device into permissive mode\n"));
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "Rebooting the device into permissive mode now!\n");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	FastbootOkay("");
+	RebootDevice(SET_PERMISSIVE_MODE);
+
+	// Shouldn't get here
+	FastbootFail("Failed to reboot");
+#else
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "FTM mode, Already set permissive!\n");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	FastbootOkay("");
+#endif
+}
+// --- ASUS_BSP : add for set permissive cmdline
+
+// +++ ASUS_BSP : add for wipe-data by recovery and enter fastboot mode
+STATIC VOID CmdOemFactoryReset2(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	EFI_STATUS Status;
+
+	DEBUG((EFI_D_INFO, "Wipe-data and rebooting the device into fastboot mode \n"));
+
+	Status = SetOemFactoryReset2Flag();
+	if (Status != EFI_SUCCESS)
+	{
+		FastbootFail("Write FactoryReset2Flag deviceinfo fail");
+	}
+
+	Status = FactoryResetFromRecovery();
+
+	if (Status != EFI_SUCCESS)
+	{
+		FastbootFail("Write misc partition fail");
+	}
+	else
+	{
+		FastbootOkay("");
+		RebootDevice(RECOVERY_MODE);
+	}
+
+}
+// --- ASUS_BSP : add for wipe-data by recovery and enter fastboot mode
+
+// +++ ASUS_BSP : add for wipe-data by recovery
+STATIC VOID CmdOemFactoryReset(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	EFI_STATUS Status = EFI_SUCCESS;
+
+	DEBUG((EFI_D_INFO, "[ABL] Rebooting the device into recovery mode and wipe-data\n"));
+
+	Status = FactoryResetFromRecovery();
+
+	if (Status != EFI_SUCCESS)
+	{
+		FastbootFail("[ABL] Write misc partition fail");
+	}
+	else
+	{
+		FastbootOkay("");
+		RebootDevice(RECOVERY_MODE);
+	}
+
+	// Shouldn't get here
+	FastbootFail ("[ABL] Failed to reboot");
+}
+// --- ASUS_BSP : add for wipe-data by recovery
+
+// +++ ASUS_BSP : add for get BootCount
+STATIC VOID CmdOemGetBootCount(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemGetBootCount()\n"));
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "[ABL] BootCount = %d", GetBootCounter());
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	DEBUG((EFI_D_ERROR, "[ABL]  --- CmdOemGetBootCount()\n"));
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for get BootCount
+
+// +++ ASUS_BSP : add for get bat vol
+STATIC VOID CmdOemGetBatVol(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	UINT32 BatteryVoltage = 0;
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemGetBatVol()\n"));
+
+	if(!TargetBatterySocOk(&BatteryVoltage))
+	{
+		FastbootFail ("Failed to get bat vol");
+	}
+	else {
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "bat vol = %d mV", BatteryVoltage);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		FastbootOkay("");
+	}
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemGetBatVol()\n"));
+}
+// --- ASUS_BSP : add for get bat vol
+
+// +++ ASUS_BSP : add for get bat cap
+STATIC VOID CmdOemGetBatCap(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemGetBatCap()\n"));
+
+#if 0
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	UINT32 BatteryVoltage = 0;
+	UINT32 BatteryCap = 0;
+	
+	if(!TargetBatterySocOk(&BatteryVoltage))
+	{
+		FastbootFail ("Failed to get bat vol");
+	}
+	else {
+		//Scale to 99%
+		BatteryCap = (BatteryVoltage - FG_STUB_BATT_VOLTAGE_MIN_MV_2S) * 99;
+		//Rounding
+		BatteryCap = (BatteryCap + (FG_STUB_CHARGE_VOLTAGE_MAX_MV_2S - FG_STUB_BATT_VOLTAGE_MIN_MV_2S)/2)/(FG_STUB_CHARGE_VOLTAGE_MAX_MV_2S - FG_STUB_BATT_VOLTAGE_MIN_MV_2S);
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "bat cap = %d%%", BatteryCap);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		FastbootOkay("");
+	}
+#endif
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemGetBatCap()\n"));
+}
+// --- ASUS_BSP : add for get bat cap
+
+// +++ ASUS_BSP : add for get build version
+STATIC VOID CmdOemGetBuildVersion(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	sys_info sysinfo;
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemGetBuildVersion()\n"));
+
+	if(read_sysinfo(&sysinfo) == EFI_SUCCESS)
+	{
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "BUILD_VERION = %a", sysinfo.csc_build_version);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		FastbootOkay("");
+	}
+	else
+	{
+		FastbootFail("Failed to get build version");
+	}
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemGetBuildVersion()\n"));
+
+}
+// --- ASUS_BSP : add for get build version
+
+// +++ ASUS_BSP : add for system info
+STATIC VOID CmdOemSystemInfo(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	sys_info sysinfo;
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemSystemInfo()\n"));
+
+	if(read_sysinfo(&sysinfo) == EFI_SUCCESS)
+	{
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " board_info: %a", sysinfo.board_info);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " mem_info: %a", sysinfo.mem_info);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " cpu_freq: %a", sysinfo.cpu_freq);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " product_name: %a", sysinfo.product_name);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+/*
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " product_locale: %a", sysinfo.product_locale);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+*/
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " product_carrier: %a", sysinfo.product_carrier);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " csc_build_version: %a", sysinfo.csc_build_version);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " bt_mac: %a", sysinfo.bt_mac);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " wifi_mac: %a", sysinfo.wifi_mac);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " wifi_mac_2: %a", sysinfo.wifi_mac_2);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " imei: %a", sysinfo.imei);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " imei2: %a", sysinfo.imei2);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " ssn: %a", sysinfo.ssn);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " isn: %a", sysinfo.isn);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " color: %a", sysinfo.color);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+/*
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " versatility: %a", sysinfo.versatility);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+*/
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " country: %a", sysinfo.country);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " customer: %a", sysinfo.customer);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " ufs: %a", sysinfo.ufs_info);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " setupwizard: %a", sysinfo.setupwizard);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " toolid_check: %a", sysinfo.toolid_check);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		FastbootOkay("");
+	}
+	else
+	{
+		FastbootFail("Failed to read sysinfo");
+	}
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemSystemInfo()\n"));
+}
+// --- ASUS_BSP : add for system info
+
+// +++ ASUS_BSP : add for ssn info
+STATIC VOID CmdOemSsnInfo(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	CHAR8 NowChar[MAX_RSP_SIZE];
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemSsnInfo()\n"));
+	GetSSNNum(NowChar, sizeof(NowChar));
+	DEBUG((EFI_D_ERROR, "[ABL] SSN_NUM = %a\n", NowChar));
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "SSN_NUM = %a", NowChar);
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemSsnInfo()\n"));
+
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for ssn info
+
+// +++ ASUS_BSP : add for isn info
+STATIC VOID CmdOemIsnInfo(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	CHAR8 NowChar[MAX_RSP_SIZE];
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemIsnInfo()\n"));
+	GetISNNum(NowChar, sizeof(NowChar));
+	DEBUG((EFI_D_ERROR, "[ABL] ISN_NUM = %a\n", NowChar));
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "ISN_NUM = %a", NowChar);
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemIsnInfo()\n"));
+
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for isn info
+
+// +++ ASUS_BSP : add for read TOOLID
+STATIC VOID CmdOemGetToolId(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	CHAR8 NowChar[MAX_RSP_SIZE];
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemGetToolId()\n"));
+	GetTOOLID(NowChar, sizeof(NowChar));
+	DEBUG((EFI_D_ERROR, "[ABL] TOOLID = %a\n", NowChar));
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "TOOLID = %a", NowChar);
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemGetToolId()\n"));
+
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for read TOOLID
+
+// +++ ASUS_BSP : add for get cpuid hash
+STATIC VOID CmdOemGetCpuidHash(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	CHAR8 NowChar[MAX_RSP_SIZE];
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemGetCpuidHash()\n"));
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "CPUID = 0x%lx", Get_CPU_ID());
+
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	GetCpuidHash(NowChar, sizeof(NowChar));
+	DEBUG((EFI_D_ERROR, "[ABL] CPUID HASH = %a\n", NowChar));
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "CPUID HASH = %a", NowChar);
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemGetCpuidHash()\n"));
+	FastbootOkay("");
+}
+// --- ASUS_BSP :  add for get cpuid hash
+
+// +++ ASUS_BSP :  Add for get LGF ID
+STATIC VOID CmdOemGetLGFID(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemGetLGFID()\n"));
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "LGF ID = %x", Get_LGF_ID());
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "=== ID Info List ===");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "-1 : UNKNOWN");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 0 : Entry");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 1 : Pro");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 2 : Ultimate");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "UNKNOWN");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemGetLGFID()\n"));
+	FastbootOkay("");
+}
+// --- ASUS_BSP :  Add for get BCID
+
+// +++ ASUS_BSP :  Add for get JTAGID
+STATIC VOID CmdOemGetJTAGID(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemGetJTAGID()\n"));
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "JTAG ID = %x (0x%x)", (Get_JTAG_ID() & 0xF000) >> 12, Get_JTAG_ID());
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "=== ID Info List ===");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "SM8550:0x1870E1");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "SM8550P:0x1880E1");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemGetJTAGID()\n"));
+	FastbootOkay("");
+}
+// --- ASUS_BSP :  Add for get JTAGID
+
+// +++ ASUS_BSP : Add for get FEATUREID
+STATIC VOID CmdOemGetFeatureID(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemGetFeatureID()\n"));
+
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "FeatureID = %x", Get_FEATURE_ID());
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "=== ID Info List ===");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "0x0 002-AB-SM8550_ES2");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "0x6 001-AB-SM8550_ES1");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "0x8 002-AB-SM8550P_ES");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemGetFeatureID()\n"));
+	FastbootOkay("");
+}
+// --- ASUS_BSP : Add for get FEATUREID
+
+// +++ ASUS_BSP : Add for get RFID
+STATIC VOID CmdOemGetRFID(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemGetRFID()\n"));
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "RFID = %d", Get_RF_ID());
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "=== ID Info List ===");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "-1 : UNKNOWN");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 0 : WW_H");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 1 : WW_L");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 2 : CN");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 3 : no RF board");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemGetRFID()\n"));
+	FastbootOkay("");
+}
+// --- ASUS_BSP : Add for get RFID
+
+// +++ ASUS_BSP : Add for get SKUID
+STATIC VOID CmdOemGetSKUID(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemGetSKUID()\n"));
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "SKUID = %d", Get_SKU_ID());
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "=== ID Info List ===");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "-1 : UNKNOWN");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 0 : UFS3.1/128GB");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 1 : UFS3.1/256GB");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 2 : UFS3.1/512GB");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 3 : UFS3.1/1TB");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 4");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 5");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 6");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 7");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemGetSKUID()\n"));
+	FastbootOkay("");
+}
+// --- ASUS_BSP : Add for get SKUID
+
+// +++ ASUS_BSP : Add for get PRJID
+STATIC VOID CmdOemGetPRJID(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemGetPRJID()\n"));
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "PRJID = %d \n", Get_PJ_ID());
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "=== ID Info List ===");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "-1 : UNKNOWN");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 0 : Entry");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 1 : Pro");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 2 : Ultimate");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemGetPRJID()\n"));
+	FastbootOkay("");
+}
+// --- ASUS_BSP : Add for get PRJID
+
+// +++ ASUS_BSP : Add for get HWID
+STATIC VOID CmdOemGetHWID(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemGetHWID()\n"));
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "HWID = %d \n", Get_HW_ID());
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "=== ID Info List ===");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "-1 : UNKNOWN");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 0xD : EVB");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 0x1 : SR1");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 0x2 : SR2");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 0x4 : ER1");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 0x8 : ER2");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 0x9 : PR");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 0xB : MP");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemGetHWID()\n"));
+	FastbootOkay("");
+}
+// --- ASUS_BSP : Add for get HWID
+
+// +++ ASUS_BSP : Add for get DTID
+STATIC VOID CmdOemGetDTID(CONST CHAR8 * arg, VOID * data, UINT32 sz)
+{
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemGetDTID()\n"));
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "DTID = %d\n", GetDeviceTreeID());
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "=== ID Info List ===");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " -1 : UNKNOWN");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 30 : EVB");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 40 : SR");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 50 : TBD");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 60 : TBD");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 70 : TBD");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 80 : TBD");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), " 90 : TBD");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "100 : TBD");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemGetDTID()\n"));
+	FastbootOkay("");
+}
+// --- ASUS_BSP : Add for get DTID
+
+// +++ ASUS_BSP : add for oem device shutdown
+STATIC VOID CmdOemShutDown()
+{
+	EFI_STATUS Status = EFI_SUCCESS;
+	BOOLEAN ChargerPresent = TRUE;
+	CHAR8 DeviceInfo[MAX_RSP_SIZE];
+	UINT8 plug_value = 0;
+	UINT8 pull_value = 0;
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemShutDown()\n"));
+
+	Status = GetPmicReg(0x7, 0x2910, &plug_value);
+
+	if (Status != EFI_SUCCESS) {
+		FastbootFail ("Failed to write pmic reg value");
+	}
+	else {
+		DEBUG((EFI_D_ERROR, "[ABL] ASUS_ShutdownDevice() : Status=%r, plug_value=%x\n", Status, plug_value));
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "call CmdOemShutDown()");
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+		FastbootOkay("");
+	}
+
+	while(ChargerPresent == TRUE){
+		GetPmicReg(0x7, 0x2910, &pull_value);
+		if(plug_value != pull_value) {
+			//DEBUG((EFI_D_ERROR, "[ABL] ASUS_ShutdownDevice() : Status=%r, pull_value=%x\n", Status, pull_value));
+			ChargerPresent = FALSE;
+			//DEBUG((EFI_D_ERROR, "waitting for cable out ....\n"));
+			MicroSecondDelay(3000000);
+		}
+	}
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemShutDown()\n"));
+	ShutdownDevice();
+	// Shouldn't get here
+	FastbootFail("Failed to shutdown");
+}
+// --- ASUS_BSP : add for oem device shutdown
+
+// +++ ASUS_BSP : add for adb enable
+STATIC VOID CmdEnableAdb(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	DEBUG((EFI_D_INFO, "Rebooting the device into adb mode\n"));
+	FastbootOkay("");
+	RebootDevice(ENABLE_ADB_MODE);
+
+	// Shouldn't get here
+	FastbootFail("Failed to reboot");
+}
+// --- ASUS_BSP : add for adb enable
+
+// +++ ASUS_BSP : add for gpt-info
+STATIC VOID CmdOemGptinfo(CONST CHAR8 *arg, VOID *data, UINT32 sz)
+{
+	CHAR8                    DeviceInfo[MAX_RSP_SIZE];
+	EFI_STATUS               Status;
+	CHAR8                    PartitionNameAscii[MAX_GPT_NAME_SIZE];
+	EFI_PARTITION_ENTRY     *PartEntry;
+	UINT16                   i;
+	UINT32                   j;
+	/* By default the LunStart and LunEnd would point to '0' and max value */
+	UINT32 LunStart = 0;
+	UINT32 LunEnd = GetMaxLuns();
+
+	UINT32 Priority_Value = 0;
+	UINT32 ActiveValue =0;
+	UINT32 RetryCount =0;
+	UINT32 Success_Value=0;
+	UINT32 Unbootable_Value=0;
+
+	DEBUG((EFI_D_ERROR, "[ABL] +++ PartitionDump : LunEnd = %d\n", LunEnd));
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "/////////////////// GPT INFO ///////////////////");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "UFS MAX LUN : %d", LunEnd);
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	/* If Lun is set in the Handle flash command then find the block io for that lun */
+	if (LunSet)
+	{
+		LunStart = Lun;
+		LunEnd = Lun + 1;
+	}
+
+	for (i = LunStart; i < LunEnd; i++)
+	{
+		AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "/////////////////// LUN %d ///////////////////",i);
+		FastbootInfo(DeviceInfo);
+		WaitForTransferComplete();
+
+		for (j = 0; j < Ptable[i].MaxHandles; j++)
+		{
+			Status = gBS->HandleProtocol(Ptable[i].HandleInfoList[j].Handle, &gEfiPartitionRecordGuid, (VOID **)&PartEntry);
+			if (EFI_ERROR (Status))
+			{
+				DEBUG((EFI_D_VERBOSE, "Error getting the partition record for Lun %d and Handle: %d : %r\n", i, j,Status));
+				continue;
+			}
+
+			UnicodeStrToAsciiStr(PartEntry->PartitionName, PartitionNameAscii);
+			DEBUG((EFI_D_INFO, "LUN:[%d] PARTITION_NUM:[%d] Name:[%a] StartLba: %u EndLba:%u\n", i,j,PartitionNameAscii, PartEntry->StartingLBA, PartEntry->EndingLBA));
+
+			AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "PARTITION_NUM : %d", j);
+			FastbootInfo(DeviceInfo);
+			WaitForTransferComplete();
+
+			AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "PARTITION_NAME : %a", PartitionNameAscii);
+			FastbootInfo(DeviceInfo);
+			WaitForTransferComplete();
+
+			Priority_Value= (PartEntry->Attributes & PART_ATT_PRIORITY_VAL) >> PART_ATT_PRIORITY_BIT;
+			DEBUG((EFI_D_ERROR,"[AB] FindPtnActiveSlot : Priority_Value = %d\n",Priority_Value));
+
+			ActiveValue = (PartEntry->Attributes & PART_ATT_ACTIVE_VAL) >> PART_ATT_ACTIVE_BIT;
+			DEBUG((EFI_D_ERROR,"[AB] FindPtnActiveSlot : ActiveValue = %d\n",ActiveValue));
+
+			RetryCount = (PartEntry->Attributes & PART_ATT_MAX_RETRY_COUNT_VAL) >> PART_ATT_MAX_RETRY_CNT_BIT;
+			DEBUG((EFI_D_ERROR,"[AB] FindPtnActiveSlot : RetryCount = %llu\n",RetryCount));
+
+			Success_Value= (PartEntry->Attributes & PART_ATT_SUCCESSFUL_VAL) >> PART_ATT_SUCCESS_BIT;
+			DEBUG((EFI_D_ERROR,"[AB] FindPtnActiveSlot : Success_Value = %d\n",Success_Value));
+
+			Unbootable_Value= (PartEntry->Attributes & PART_ATT_UNBOOTABLE_VAL) >> PART_ATT_UNBOOTABLE_BIT;
+			DEBUG((EFI_D_ERROR,"[AB] FindPtnActiveSlot : Unbootable_Value = %d\n",Unbootable_Value));
+
+			AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "-----------------------------");
+			FastbootInfo(DeviceInfo);
+			WaitForTransferComplete();
+
+			AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "PARTITION ATTR.Priority: %d", Priority_Value);
+			FastbootInfo(DeviceInfo);
+			WaitForTransferComplete();
+
+			AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "PARTITION ATTR.Active: %d", ActiveValue);
+			FastbootInfo(DeviceInfo);
+			WaitForTransferComplete();
+
+			AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "PARTITION ATTR.RetryCount: %d", RetryCount);
+			FastbootInfo(DeviceInfo);
+			WaitForTransferComplete();
+
+			AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "PARTITION ATTR.Success: %d", Success_Value);
+			FastbootInfo(DeviceInfo);
+			WaitForTransferComplete();
+
+			AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "PARTITION ATTR.Unbootable: %d", Unbootable_Value);
+			FastbootInfo(DeviceInfo);
+
+			WaitForTransferComplete();
+			AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "-----------------------------");
+			FastbootInfo(DeviceInfo);
+			WaitForTransferComplete();
+
+			AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "START_LBA : %u", PartEntry->StartingLBA);
+			FastbootInfo(DeviceInfo);
+			WaitForTransferComplete();
+
+			AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "END_LBA : %u", PartEntry->EndingLBA);
+			FastbootInfo(DeviceInfo);
+			WaitForTransferComplete();
+
+			AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "PARTITION_SIZE (4K BLOCK): %u", ((PartEntry->EndingLBA)-(PartEntry->StartingLBA)+1));
+			FastbootInfo(DeviceInfo);
+			WaitForTransferComplete();
+
+			AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "==================================");
+			FastbootInfo(DeviceInfo);
+			WaitForTransferComplete();
+
+		}
+	}
+	DEBUG((EFI_D_ERROR, "[ABL] --- PartitionDump : LunEnd = %d\n", LunEnd));
+
+	AsciiSPrint(DeviceInfo, sizeof(DeviceInfo), "///////////////////////////////////////////////");
+	FastbootInfo(DeviceInfo);
+	WaitForTransferComplete();
+
+	FastbootOkay("");
+}
+// --- ASUS_BSP : add for gpt-info
+////////////////////////////////////////////////////////////////////////
+
+// +++ ASUS_BSP : add for xts unlock
+STATIC VOID CmdOemXtsUnlock(){
+	CHAR8 resp[MAX_RSP_SIZE];
+	DEBUG((EFI_D_ERROR, "\n"));
+	DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemXtsUnlock()\n"));
+	
+	// gen random numbers
+	random_num_generator(rand_number);
+
+	// gen hash numbers
+	cmd_oem_gen_hash(rand_number, 1);
+
+	// verify hash file
+	if(AsciiStrnCmp(calculate_hash_buf, mmc_hash_buf, hash_buf_size) == 0)
+	{
+		DEBUG((EFI_D_ERROR,"[ABL] cmd_oem_auth_hash - Authorized hash : PASS \n"));
+
+		SetAuthorizedValue(TRUE);
+
+		if (!(IsAuthorized()))
+		{
+			DEBUG((EFI_D_ERROR, "[ABL] Unable to Write Device Info : IsAuthorized = %d\n", IsAuthorized()));
+			FastbootFail("");
+			return;
+		}
+		
+		SetDeviceUnlockValue (UNLOCK, TRUE);
+		if(!(IsUnlocked())){
+			DEBUG((EFI_D_ERROR, "[ABL] Unable to Write Device Info : IsUnlocked = %d\n", IsUnlocked()));
+			FastbootFail("");
+			return;
+		}
+
+		AsciiSPrint(resp, sizeof(resp), "\tAuthorized Result : PASS");
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+	}
+	else
+	{
+		DEBUG((EFI_D_ERROR, "[ABL] (ERROR) cmd_oem_auth_hash - Authorized hash : FAILED \n"));
+		AsciiSPrint(resp, sizeof(resp), "\tAuthorized Result : FAILED");
+		FastbootInfo(resp);
+		WaitForTransferComplete();
+	}
+
+	FastbootOkay("");
+
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemXtsUnlock()\n"));
+	DEBUG((EFI_D_ERROR, "\n"));
+}
+
+// +++ ASUS_BSP : add for lock device
+STATIC VOID
+CmdOemLock (CONST CHAR8 *Arg, VOID *Data, UINT32 Size)
+{
+    CHAR16 Cmdinfo[32]={0};
+    CHAR8 CmdlockStr[64]={0};
+    
+    // +++ ASUS_BSP : add for fastboot permission
+    if(!ASUS_FASTBOOT_PERMISSION)
+    {
+        FastbootFail("permission denied");
+        return;
+    }
+
+    if (Arg == NULL) {
+        FastbootFail("Invalid parameter !");
+        return;
+    }
+
+    AsciiStrToUnicodeStr((CHAR8 *)Arg, Cmdinfo);
+    DEBUG((EFI_D_ERROR, "[ABL] +++ CmdOemLock() : Cmdinfo=%s\n", Cmdinfo));
+   
+	FastbootInfo("Try to lock device");
+	WaitForTransferComplete();
+
+	SetAuthorizedValue(FALSE);
+	SetDeviceUnlockValue (UNLOCK, FALSE);
+	SetDeviceDebugUnlockValue(FALSE);
+	
+	if(!IsUnlocked() && !IsDebugUnlocked() && !IsAuthorized()){
+		AsciiSPrint(CmdlockStr, sizeof(CmdlockStr), "Lock device successfully.");
+	}else{
+		AsciiSPrint(CmdlockStr, sizeof(CmdlockStr), "Lock device failed.");
+	}
+	
+	FastbootInfo(CmdlockStr);
+	WaitForTransferComplete();
+	
+	FastbootOkay("");
+	DEBUG((EFI_D_ERROR, "[ABL] --- CmdOemLock()\n"));
+}
+
+#endif
 
 /* Registers all Stock commands, Publishes all stock variables
  * and partitiion sizes. base and size are the respective parameters
@@ -3729,19 +8579,93 @@ FastbootCommandSetup (IN VOID *Base, IN UINT64 Size)
       {"oem disable-charger-screen", CmdOemDisableChargerScreen},
       {"oem off-mode-charge", CmdOemOffModeCharger},
       {"oem select-display-panel", CmdOemSelectDisplayPanel},
+      {"oem set-hw-fence-value", CmdOemSetHwFenceValue},
       {"oem device-info", CmdOemDevinfo},
+#if HIBERNATION_SUPPORT_NO_AES
+      {"oem golden-snapshot", CmdGoldenSnapshot},
+#endif
       {"continue", CmdContinue},
       {"reboot", CmdReboot},
-#ifdef DYNAMIC_PARTITION_SUPPORT
-      {"reboot-recovery", CmdRebootRecovery},
-      {"reboot-fastboot", CmdRebootFastboot},
-#ifdef VIRTUAL_AB_OTA
-      {"snapshot-update", CmdUpdateSnapshot},
-#endif
-#endif
       {"reboot-bootloader", CmdRebootBootloader},
       {"getvar:", CmdGetVar},
       {"download:", CmdDownload},
+#ifdef ASUS_BUILD
+      {"oem partition", CmdPartition},
+      {"oem gpt-info", CmdOemGptinfo},// +++ ASUS_BSP : add for gpt-info
+      {"oem adb_enable", CmdEnableAdb},// +++ ASUS_BSP : add for adb enable
+      {"oem logcat-asdf-on", CmdOemLogcatAsdfOn},// +++ ASUS_BSP : add for logcat-asdf sevices
+      {"oem logcat-asdf-off", CmdOemLogcatAsdfOff},// +++ ASUS_BSP : add for logcat-asdf sevices
+      {"oem shutdown", CmdOemShutDown},// +++ ASUS_BSP : add for oem device shutdown
+      {"oem get-dtid", CmdOemGetDTID},// +++ ASUS_BSP : Add for get DTID
+      {"oem get-hwid", CmdOemGetHWID},// +++ ASUS_BSP : Add for get HWID
+      {"oem get-prjid", CmdOemGetPRJID},// +++ ASUS_BSP : Add for get PRJID
+      {"oem get-skuid", CmdOemGetSKUID},// +++ ASUS_BSP : Add for get SKUID
+      {"oem get-rfid", CmdOemGetRFID},// +++ ASUS_BSP : Add for get RFID
+      {"oem get-featureid", CmdOemGetFeatureID},// +++ ASUS_BSP : Add for get FEATUREID
+      {"oem get-jtagid", CmdOemGetJTAGID},// +++ ASUS_BSP : Add for get JTAGID
+      {"oem get-lgfid", CmdOemGetLGFID},// +++ ASUS_BSP : Add for get LGF ID
+      {"oem get-cpuidhash", CmdOemGetCpuidHash},// +++ ASUS_BSP : add for get cpuid hash
+      {"oem get-toolid", CmdOemGetToolId},// +++ ASUS_BSP : add for read TOOLID
+      {"oem isn-info", CmdOemIsnInfo},// +++ ASUS_BSP : add for isn info
+      {"oem ssn-info", CmdOemSsnInfo},// +++ ASUS_BSP : add for ssn info
+      {"oem system-info", CmdOemSystemInfo},// +++ ASUS_BSP : add for system info
+      {"oem get_build_version", CmdOemGetBuildVersion},// +++ ASUS_BSP : add for get build version
+      {"oem get-batcap", CmdOemGetBatCap},// +++ ASUS_BSP : add for get bat cap
+      {"oem get-batvol", CmdOemGetBatVol},// +++ ASUS_BSP : add for get bat vol
+      {"oem get-bootcount", CmdOemGetBootCount},// +++ ASUS_BSP : add for boot count
+      {"oem factory-reset", CmdOemFactoryReset},// +++ ASUS_BSP : add for wipe-data by recovery
+      {"oem factory-reset2", CmdOemFactoryReset2},// +++ ASUS_BSP : add for wipe-data by recovery and enter fastboot mode
+      {"oem reboot-recovery", CmdRebootRecovery},// +++ ASUS_BSP : add for reboot recovery
+      {"oem set-permissive", CmdOemSetPermissive},// +++ ASUS_BSP : add for set permissive cmdline
+      {"oem enter-dload", CmdOemEnterDLoadMode},// +++ ASUS_BSP : add for enter emergency download mode cmd
+      {"oem check-s3", CmdOemCheckS3},// +++ ASUS_BSP : add for check s3 reset type cmd
+      {"oem EnterShippingMode", CmdOemEnterShippingMode},// +++ ASUS_BSP : add for shipping mode
+      {"oem check-nrfuse", CmdOemCheckFuseNoRpmb},// +++ ASUS_BSP : add for check fuse with no rpmb
+      {"oem check-fuse", CmdOemCheckFuse},//+++ ASUS_BSP : add for check fuse
+      {"oem fuse-info", CmdOemFuseInfo},//+++ ASUS_BSP : add for get fuse info
+      {"oem show-barcode", CmdOemDrawBarcode},// +++ ASUS_BSP : add for draw barcode
+      {"oem checksetupwizard", CmdOemCheckSetupWizard},// +++ ASUS_BSP : add for Check Setup Wizard
+      {"oem asus-csc_lk", CmdOemAsusCscLk},// +++ ASUS_BSP : add for oem ASUS CSC lock device
+      {"oem rsa_test_", CmdRsaTest},// +++ ASUS_BSP : add for user unlock
+      {"oem crc32_", CmdOemCalculatePtCrc32},// +++ ASUS_BSP : add for get partition hash
+      {"oem hash_", CmdOemCalculatePtCrc32},// +++ ASUS_BSP : add for get partition hash
+      {"oem gen-random", CmdOemGenRNG},// +++ ASUS_BSP : add for ASUS dongle unlock
+      {"oem auth-hash", CmdOemAuthHash},// +++ ASUS_BSP : add for ASUS dongle unlock
+      {"oem auth-hash_2", CmdOemAuthHash2},// +++ ASUS_BSP : add for ASUS dongle unlock
+      {"oem auth-hash_3", CmdOemAuthHash3},// +++ ASUS_BSP : add for WaterMask unlock
+      {"oem get-imeiauth", CmdOemGetIMEIAuth},// +++ ASUS_BSP : add for WaterMask unlock
+      {"oem slot_b_enable", CmdOemSlotbEnable},// +++ ASUS_BSP : add for enable flash raw in slot_b
+      {"oem get-verify_vbmeta_ret", CmdOemGetVerifyVbmetaRet},// +++ ASUS_BSP : add for verify_vbmeta_ret
+      {"oem update-cmdline_", CmdOemUpdateCmdline},// +++ ASUS_BSP : add for update cmdline
+      {"oem backup-fac",CmdOemBackupFac},// +++ ASUS_BSP : add for backup factory data
+      {"oem restore-fac",CmdOemRestoreFac},// +++ ASUS_BSP : add for restore factory data
+      {"oem record-info", CmdOemRecordInfo},// +++ ASUS_BSP : falling & hit & thump record info
+      {"oem asus-erase-asdf", CmdOemFEASDF},
+      // +++ ASUS_BSP : Need ASUS_FASTBOOT_PERMISSION
+      {"oem get-pmic-reg_", CmdOemGetPmicReg},// +++ ASUS_BSP : add for get_pmic_reg value
+      {"oem write-pmic-reg_", CmdOemWritePmicReg},// +++ ASUS_BSP : add for write_pmic_reg value
+      {"oem reset-boot_count", CmdOemResetBootCount},// +++ ASUS_BSP : add for boot count
+      {"oem reset-lock_count", CmdOemResetLockCount},// +++ ASUS_BSP : add for lock count
+      {"oem reset-a_retry_count", CmdOemResetSlotARetryCount},// +++ ASUS_BSP : add for unbootable_counter and retry_counter
+      {"oem reset-a_unbootable_count", CmdOemResetSlotAUnbootableCount},// +++ ASUS_BSP : add for unbootable_counter and retry_counter
+      {"oem reset-b_retry_count", CmdOemResetSlotBRetryCount},// +++ ASUS_BSP : add for unbootable_counter and retry_counter
+      {"oem reset-b_unbootable_count", CmdOemResetSlotBUnbootableCount},// +++ ASUS_BSP : add for unbootable_counter and retry_counter
+      {"oem force-dtid_", CmdOemForceHwId},// +++ ASUS_BSP : add for force dtid
+      {"oem reset-dev_info", CmdOemResetDevInfo},// +++ ASUS_BPS : add for reset dev info
+      {"oem reset-auth2", CmdOemResetAuth2},// +++ ASUS_BPS : add for reset dev info
+      {"oem reset-auth3", CmdOemResetAuth3},// +++ ASUS_BPS : add for reset WaterMask unlock
+      {"oem disable-verity", CmdOemDisableVerity},// +++ ASUS_BSP : add for disable verity
+      {"oem enable-verity", CmdOemEnableVerity},// +++ ASUS_BSP : add for enable verity
+      {"oem enable-vbmeta", CmdOemEnableVbmeta},// +++ ASUS_BSP : add for enable vbmeta magic
+      {"oem read-vbmeta", CmdOemReadVbmeta},// +++ ASUS_BSP : add for read vbmeta magic
+      {"oem read-rollback", CmdOemReadRollback},// +++ ASUS_BSP : add for read vbmeta_system rollback value
+      {"oem reset-rollback", CmdOemResetRollback},// +++ ASUS_BSP : add for reset vbmeta_system rollback value
+      {"oem uart-on", CmdOemUartOn},// +++ add for uart on
+      {"oem uart-off", CmdOemUartOff},// +++ add for uart off
+      {"oem xts-unlock", CmdOemXtsUnlock},// +++ ASUS_BSP : Add for xts unlock
+      {"oem asus-lock", CmdOemLock}, // +++ ASUS_BSP :Lock device
+      {"oem check-avb", CmdOemAsusVerifiedState}
+#endif
   };
 
   /* Register the commands only for non-user builds */
@@ -3758,27 +8682,6 @@ FastbootCommandSetup (IN VOID *Base, IN UINT64 Size)
 
   if (IsDynamicPartitionSupport ()) {
     FastbootPublishVar ("is-userspace", "no");
-  }
-
-  if (IsVirtualAbOtaSupported ()) {
-    SnapshotMergeStatus = GetSnapshotMergeStatus ();
-
-    switch (SnapshotMergeStatus) {
-      case SNAPSHOTTED:
-        SnapshotMergeStatus = SNAPSHOTTED;
-        break;
-      case MERGING:
-        SnapshotMergeStatus = MERGING;
-        break;
-      default:
-        SnapshotMergeStatus = NONE_MERGE_STATUS;
-        break;
-    }
-
-    AsciiSPrint (SnapshotMergeState,
-                  AsciiStrLen (VabSnapshotMergeStatus[SnapshotMergeStatus]) + 1,
-                  "%a", VabSnapshotMergeStatus[SnapshotMergeStatus]);
-    FastbootPublishVar ("snapshot-update-status", SnapshotMergeState);
   }
 
   AsciiSPrint (FullProduct, sizeof (FullProduct), "%a", PRODUCT_NAME);
@@ -3847,6 +8750,42 @@ FastbootCommandSetup (IN VOID *Base, IN UINT64 Size)
   UINT32 FastbootCmdCnt = sizeof (cmd_list) / sizeof (cmd_list[0]);
   for (i = 1; i < FastbootCmdCnt; i++)
     FastbootRegister (cmd_list[i].name, cmd_list[i].cb);
+
+  if (IsDynamicPartitionSupport ()) {
+    FastbootRegister ("reboot-recovery", CmdRebootRecovery);
+    FastbootRegister ("reboot-fastboot", CmdRebootFastboot);
+    FastbootRegister ("snapshot-update", CmdUpdateSnapshot);
+
+    SnapshotMergeStatus = GetSnapshotMergeStatus ();
+
+    switch (SnapshotMergeStatus) {
+      case SNAPSHOTTED:
+        SnapshotMergeStatus = SNAPSHOTTED;
+        break;
+      case MERGING:
+        SnapshotMergeStatus = MERGING;
+        break;
+      default:
+        SnapshotMergeStatus = NONE_MERGE_STATUS;
+        break;
+    }
+
+    AsciiSPrint (SnapshotMergeState,
+                  AsciiStrLen (VabSnapshotMergeStatus[SnapshotMergeStatus]) + 1,
+                  "%a", VabSnapshotMergeStatus[SnapshotMergeStatus]);
+    FastbootPublishVar ("snapshot-update-status", SnapshotMergeState);
+  }
+
+#ifdef ASUS_BUILD
+  FastbootPublishVar("project", asus_project_info);
+  FastbootPublishVar ("max-download-size", "536870912");// +++ ASUS_BSP : change max-download-size (512*1024*1024)
+  FastbootPublishVar("cpuid", "135");
+  FastbootPublishVar("cid", cid_name);
+#endif
+
+#ifdef ASUS_AI2205_BUILD
+  FastbootPublishVar("project", "ROG_PHONE7");
+#endif
 
   // Read Allow Ulock Flag
   Status = ReadAllowUnlockValue (&IsAllowUnlock);

@@ -25,8 +25,46 @@
  * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
  * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+
+/*
+ * Changes from Qualcomm Innovation Center are provided under the following license:
+ *
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ *
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted (subject to the limitations in the
+ *  disclaimer below) provided that the following conditions are met:
+ *
+ *      * Redistributions of source code must retain the above copyright
+ *        notice, this list of conditions and the following disclaimer.
+ *
+ *      * Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and/or other materials provided
+ *        with the distribution.
+ *
+ *      * Neither the name of Qualcomm Innovation Center, Inc. nor the names of its
+ *        contributors may be used to endorse or promote products derived
+ *        from this software without specific prior written permission.
+ *
+ *  NO EXPRESS OR IMPLIED LICENSES TO ANY PARTY'S PATENT RIGHTS ARE
+ *  GRANTED BY THIS LICENSE. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT
+ *  HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED
+ *   WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+ *  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ *  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ *  ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ *  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+ *  GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ *  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+ *  IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+ *  OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
+ *  IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include "AutoGen.h"
 #include <Library/DebugLib.h>
+#include <Library/Debug.h>
 #include <Library/DeviceInfo.h>
 #include <Library/DeviceInfo.h>
 #include <Library/DrawUI.h>
@@ -44,6 +82,23 @@
 #include <Uefi.h>
 
 #include <Protocol/EFIVerifiedBoot.h>
+
+#ifdef ASUS_BUILD
+#include <Library/FastbootLib/FastbootCmds.h>
+#include <Library/VerifiedBoot.h>
+
+// +++ ASUS_BSP : add for ASUS HOT KEY MENU
+#define ASUS_HOT_KEY_NUM 6
+char asus_hot_key_buf[ASUS_HOT_KEY_NUM]={0};
+char asus_hot_key[]="01101";//down-> up->up->down->up
+UINT32 key_counter = 0;
+UINT32 key_clean = 0;
+UINT32 show_hot_key_menu = 0;
+UINT32 first_boot = 0;
+extern BOOLEAN is_reboot_mode;
+// --- ASUS_BSP : add for ASUS HOT KEY MENU
+BOOLEAN CheckAsusVerifiedStateMenu;
+#endif
 
 STATIC UINT64 StartTimer;
 STATIC EFI_EVENT CallbackKeyDetection;
@@ -105,6 +160,10 @@ UpdateDeviceStatus (OPTION_MENU_INFO *MsgInfo, INTN Reason)
   EFI_STATUS Status = EFI_SUCCESS;
   EFI_GUID Ptype = gEfiMiscPartitionGuid;
   MemCardType CardType = UNKNOWN;
+#ifdef ASUS_BUILD
+  CHAR8 slot_a[4] = {0x3A,0x61,0x00,0x6F};
+  CHAR8 slot_b[4] = {0x3A,0x62,0x00,0x6F};
+#endif
 
   /* Clear the screen */
   gST->ConOut->ClearScreen (gST->ConOut);
@@ -112,6 +171,30 @@ UpdateDeviceStatus (OPTION_MENU_INFO *MsgInfo, INTN Reason)
   CardType = CheckRootDeviceType ();
 
   switch (Reason) {
+#ifdef ASUS_BUILD
+  case SET_ACTIVE_A:
+    CmdSetActive (slot_a, NULL, sizeof(slot_a));
+    RebootDevice (FASTBOOT_MODE);
+    break;
+  case SET_ACTIVE_B:
+    CmdSetActive (slot_b, NULL, sizeof(slot_b));
+    RebootDevice (FASTBOOT_MODE);
+    break;
+  case CHECK_AVB:
+    CheckAsusVerifiedStateMenu = TRUE;
+    BootInfo Info = {0};
+    Info.MultiSlotBoot = TRUE;
+    Info.BootIntoRecovery = FALSE;
+    Info.BootReasonAlarm = FALSE;
+    Status = LoadImageAndAuth (&Info, FALSE, FALSE);
+    if (Status != EFI_SUCCESS)
+    {
+      FastbootFail("Failed to LoadImageAndAuth.");
+    }
+    CheckAsusVerifiedStateMenu = FALSE;
+    AsusVerifiedStateShowScreen (MsgInfo);
+    break;
+#endif
   case RECOVER:
     if (MsgInfo->Info.MenuType == DISPLAY_MENU_UNLOCK ||
         MsgInfo->Info.MenuType == DISPLAY_MENU_LOCK ||
@@ -198,8 +281,24 @@ MenuVolumeUpFunc (OPTION_MENU_INFO *MenuInfo)
   MenuInfo->Info.OptionIndex = CurentIndex;
   OptionItem = MenuInfo->Info.OptionItems[CurentIndex];
 
+#ifdef ASUS_BUILD
+  if(show_hot_key_menu == 1) {
+    Status = UpdateASUSOptionItem (OptionItem, NULL);	
+    if (Status != EFI_SUCCESS) {
+      DEBUG ((EFI_D_ERROR, "Failed to update ASUS HOT KEY MENU option item\n"));
+      return;
+    }
+  } else
+#endif
   if (MenuInfo->Info.MenuType == DISPLAY_MENU_FASTBOOT) {
-    Status = UpdateFastbootOptionItem (OptionItem, NULL);
+    if (TargetBuildVariantUser()) {
+      Status = UpdateASUSGraphicOptionItem (OptionItem, NULL);
+      if(Status != EFI_SUCCESS){
+          Status = UpdateFastbootOptionItem (OptionItem, NULL);
+      }
+    }else{
+      Status = UpdateFastbootOptionItem (OptionItem, NULL);
+    }
     if (Status != EFI_SUCCESS) {
       DEBUG ((EFI_D_ERROR, "Failed to update fastboot option item\n"));
       return;
@@ -227,8 +326,24 @@ MenuVolumeDownFunc (OPTION_MENU_INFO *MenuInfo)
   MenuInfo->Info.OptionIndex = CurentIndex;
   OptionItem = MenuInfo->Info.OptionItems[CurentIndex];
 
+#ifdef ASUS_BUILD
+  if(show_hot_key_menu == 1) {
+    Status = UpdateASUSOptionItem (OptionItem, NULL);
+    if (Status != EFI_SUCCESS) {
+      DEBUG ((EFI_D_ERROR, "Failed to update ASUS HOT KEY MENU option item\n"));
+      return;
+    }
+  } else
+#endif
   if (MenuInfo->Info.MenuType == DISPLAY_MENU_FASTBOOT) {
-    Status = UpdateFastbootOptionItem (OptionItem, NULL);
+    if (TargetBuildVariantUser()) {
+      Status = UpdateASUSGraphicOptionItem (OptionItem, NULL);
+      if(Status != EFI_SUCCESS){
+          Status = UpdateFastbootOptionItem (OptionItem, NULL);
+      }
+    }else{
+      Status = UpdateFastbootOptionItem (OptionItem, NULL);
+    }
     if (Status != EFI_SUCCESS) {
       DEBUG ((EFI_D_ERROR, "Failed to update fastboot option item\n"));
       return;
@@ -392,11 +507,58 @@ MenuKeysHandler (IN EFI_EVENT Event, IN VOID *Context)
     switch (LastKey) {
     case SCAN_UP:
       if (MenuPagesAction[MenuInfo->Info.MenuType].Up_Action_Func != NULL)
+#ifdef ASUS_BUILD
+      {
+        DEBUG((DEBUG_ERROR, "[ABL] MenuKeysHandler : SCAN_UP (%d)\n", key_counter));
+        if(key_counter < (ASUS_HOT_KEY_NUM-1))
+            AsciiStrnCatS(asus_hot_key_buf, ASUS_HOT_KEY_NUM , "1", AsciiStrLen("1"));
+        DEBUG((DEBUG_ERROR, "[ABL] MenuKeysHandler : asus_hot_key_buf[%d]=%a\n", key_counter, asus_hot_key_buf));
+        if(key_counter < ASUS_HOT_KEY_NUM)
+            key_counter++;
+        else
+            DEBUG((DEBUG_ERROR, "[ABL] MenuKeysHandler : SCAN_UP (SKIP : %d)\n", key_counter));
+        MenuPagesAction[MenuInfo->Info.MenuType].Up_Action_Func(MenuInfo);
+      }
+#else
         MenuPagesAction[MenuInfo->Info.MenuType].Up_Action_Func (MenuInfo);
+#endif
       break;
     case SCAN_DOWN:
       if (MenuPagesAction[MenuInfo->Info.MenuType].Down_Action_Func != NULL)
+#ifdef ASUS_BUILD
+      {
+        DEBUG((DEBUG_ERROR, "[ABL] MenuKeysHandler : SCAN_DOWN (%d)\n", key_counter));
+
+        if(is_reboot_mode == 1 && first_boot == 0)
+        {
+            DEBUG((DEBUG_ERROR, "[ABL] MenuKeysHandler : is_reboot_mode (%d) - Skip Counter\n", key_counter));
+            first_boot = 1;
+            MenuPagesAction[MenuInfo->Info.MenuType].Down_Action_Func (MenuInfo);
+            break;
+        }
+
+        if(key_clean == 0)
+        {
+            key_counter = 0;
+            DEBUG((DEBUG_ERROR, "[ABL] MenuKeysHandler : SCAN_DOWN (%d) - Clean Counter\n", key_counter));
+            AsciiSPrint(asus_hot_key_buf, sizeof(asus_hot_key_buf), "");
+            key_clean = 1;
+        }
+
+        if(key_counter < (ASUS_HOT_KEY_NUM-1))
+            AsciiStrnCatS(asus_hot_key_buf, ASUS_HOT_KEY_NUM ,"0", AsciiStrLen("0"));
+
+        DEBUG((DEBUG_ERROR, "[ABL] MenuKeysHandler : asus_hot_key_buf[%d]=%a\n", key_counter, asus_hot_key_buf));
+
+        if(key_counter < ASUS_HOT_KEY_NUM)
+            key_counter++;
+        else
+            DEBUG((DEBUG_ERROR, "[ABL] MenuKeysHandler : SCAN_DOWN (SKIP : %d)\n", key_counter));
+        MenuPagesAction[MenuInfo->Info.MenuType].Down_Action_Func(MenuInfo);
+      }
+#else
         MenuPagesAction[MenuInfo->Info.MenuType].Down_Action_Func (MenuInfo);
+#endif
       break;
     case SCAN_SUSPEND:
       if (MenuPagesAction[MenuInfo->Info.MenuType].Enter_Action_Func != NULL)
@@ -405,6 +567,21 @@ MenuKeysHandler (IN EFI_EVENT Event, IN VOID *Context)
     default:
       break;
     }
+
+#ifdef ASUS_BUILD
+    // +++ ASUS_BSP : add for ASUS HOT KEY MENU
+    if(!AsciiStriCmp (asus_hot_key_buf, asus_hot_key))
+    {
+        if(show_hot_key_menu==0)
+        {
+            DEBUG((DEBUG_ERROR, "[ABL] MenuKeysHandler : HOT KEY DETECTED !!\n"));
+            AsusHotKeyShowScreen(MenuInfo);
+            show_hot_key_menu = 1;
+        }
+    }
+    // --- ASUS_BSP : add for ASUS HOT KEY MENU
+#endif
+
     KeyPressStartTime = GetTimerCountms ();
   }
 

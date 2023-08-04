@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015-2020, The Linux Foundation. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -25,40 +25,44 @@
  * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
  * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
+ */
+
+/*
  * Changes from Qualcomm Innovation Center are provided under the following license:
+ *
  * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted (subject to the limitations in the
- * disclaimer below) provided that the following conditions are met:
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted (subject to the limitations in the
+ *  disclaimer below) provided that the following conditions are met:
  *
- *     * Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
+ *      * Redistributions of source code must retain the above copyright
+ *        notice, this list of conditions and the following disclaimer.
  *
- *     * Redistributions in binary form must reproduce the above
- * copyright notice, this list of conditions and the following
- * disclaimer in the documentation and/or other materials provided
- * with the distribution.
+ *      * Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and/or other materials provided
+ *        with the distribution.
  *
- *     * Neither the name of Qualcomm Innovation Center, Inc. nor the names of its
- * contributors may be used to endorse or promote products derived
- * from this software without specific prior written permission.
-
- * NO EXPRESS OR IMPLIED LICENSES TO ANY PARTY'S PATENT RIGHTS ARE
- * GRANTED BY THIS LICENSE. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT
- * HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED
- * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
- * IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
- * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
- * GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
- * IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
- * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *      * Neither the name of Qualcomm Innovation Center, Inc. nor the names of its
+ *        contributors may be used to endorse or promote products derived
+ *        from this software without specific prior written permission.
  *
+ *  NO EXPRESS OR IMPLIED LICENSES TO ANY PARTY'S PATENT RIGHTS ARE
+ *  GRANTED BY THIS LICENSE. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT
+ *  HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED
+ *   WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+ *  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ *  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ *  ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ *  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+ *  GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ *  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+ *  IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+ *  OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
+ *  IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 #include "PartitionTableUpdate.h"
 #include "AutoGen.h"
 #include <Library/Board.h>
@@ -66,9 +70,15 @@
 #include <Library/LinuxLoaderLib.h>
 #include <Library/UefiLib.h>
 #include <Library/DebugLib.h>
+#include <Library/Debug.h>
 #include <Uefi.h>
 #include <Uefi/UefiSpec.h>
 #include <VerifiedBoot.h>
+#ifdef ASUS_BUILD
+#include <Library/FastbootMenu.h>
+#include "abl.h"
+char cmd_retry_count[64]       = {0};
+#endif
 
 STATIC BOOLEAN FlashingGpt;
 STATIC BOOLEAN ParseSecondaryGpt;
@@ -78,8 +88,6 @@ STATIC UINT32 MaxLuns;
 STATIC UINT32 PartitionCount;
 STATIC BOOLEAN FirstBoot;
 STATIC struct PartitionEntry PtnEntriesBak[MAX_NUM_PARTITIONS];
-#define IsMultiSlot_ABC (SlotCount == 3)
-STATIC UINT32 SlotCount;
 
 STATIC struct BootPartsLinkedList *HeadNode;
 STATIC EFI_STATUS
@@ -165,9 +173,6 @@ VOID UpdatePartitionEntries (VOID)
       gBS->CopyMem ((&PtnEntries[Index]), PartEntry, sizeof (PartEntry[0]));
       PtnEntries[Index].lun = i;
     }
-  }
-  if (NAND == CheckRootDeviceType ()) {
-    NandABUpdatePartition (PTN_ENTRIES_FROM_MISC);
   }
   /* Back up the ptn entries */
   gBS->CopyMem (PtnEntriesBak, PtnEntries, sizeof (PtnEntries));
@@ -300,12 +305,6 @@ VOID UpdatePartitionAttributes (UINT32 UpdateType)
       Status = GetStorageHandle (NO_LUN, BlockIoHandle, &MaxHandles);
     } else if (!AsciiStrnCmp (BootDeviceType, "UFS", AsciiStrLen ("UFS"))) {
       Status = GetStorageHandle (Lun, BlockIoHandle, &MaxHandles);
-    } else if (!AsciiStrnCmp (BootDeviceType, "NAND", AsciiStrLen ("NAND"))) {
-      if (UpdateType & PARTITION_ATTRIBUTES_MASK) {
-         NandABUpdatePartition (PTN_ENTRIES_TO_MISC);
-         gBS->CopyMem (PtnEntriesBak, PtnEntries, sizeof (PtnEntries));
-      }
-      return;
     } else {
       DEBUG ((EFI_D_ERROR, "Unsupported  boot device type\n"));
       return;
@@ -483,6 +482,13 @@ VOID UpdatePartitionAttributes (UINT32 UpdateType)
         goto Exit;
       }
     }
+
+    Status = BlockIo->FlushBlocks (BlockIo);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((EFI_D_ERROR, "Error flushing blocks primary GPT header: %r\n",
+              Status));
+      goto Exit;
+    }
     FreePool (GptHdrPtr);
     GptHdrPtr = NULL;
   }
@@ -557,7 +563,6 @@ STATIC EFI_STATUS GetMultiSlotPartsList (VOID)
 
   for (i = 0; i < PartitionCount; i++) {
     SearchString = PtnEntries[i].PartEntry.PartitionName;
-    UINT32 MatchCount = 0;
     if (!SearchString[0])
       continue;
 
@@ -572,25 +577,20 @@ STATIC EFI_STATUS GetMultiSlotPartsList (VOID)
           !StrnCmp (PtnEntries[j].PartEntry.PartitionName,
           SearchString, Len - 1) &&
           (StrStr (SearchString, (CONST CHAR16 *)L"_a") ||
-           StrStr (SearchString, (CONST CHAR16 *)L"_b") ||
-          (IsMultiSlot_ABC &&
-            StrStr (SearchString, (CONST CHAR16 *)L"_c")))) {
-          MatchCount++;
-          if (MatchCount == (SlotCount - 1)) {
-            TempNode = AllocateZeroPool (sizeof (struct BootPartsLinkedList));
-            if (TempNode) {
-              /*Skip _a/_b from partition name*/
-              StrnCpyS (TempNode->PartName, sizeof (TempNode->PartName),
-                 SearchString, Len - 2);
-              TempNode->Next = HeadNode;
-              HeadNode = TempNode;
-            } else {
-              DEBUG ((EFI_D_ERROR,
-               "Unable to Allocate Memory for MultiSlot Partition list\n"));
-              return EFI_OUT_OF_RESOURCES;
-            }
-            break;
-          }
+          StrStr (SearchString, (CONST CHAR16 *)L"_b"))) {
+        TempNode = AllocateZeroPool (sizeof (struct BootPartsLinkedList));
+        if (TempNode) {
+          /*Skip _a/_b from partition name*/
+          StrnCpyS (TempNode->PartName, sizeof (TempNode->PartName),
+                    SearchString, Len - 2);
+          TempNode->Next = HeadNode;
+          HeadNode = TempNode;
+        } else {
+          DEBUG ((EFI_D_ERROR,
+                  "Unable to Allocate Memory for MultiSlot Partition list\n"));
+          return EFI_OUT_OF_RESOURCES;
+        }
+        break;
       }
     }
   }
@@ -598,20 +598,29 @@ STATIC EFI_STATUS GetMultiSlotPartsList (VOID)
 }
 
 STATIC VOID
-SwitchPtnSlots (CONST CHAR16 *SetActive, CONST CHAR16 *SetInactive )
+SwitchPtnSlots (CONST CHAR16 *SetActive)
 {
   UINT32 i;
   struct PartitionEntry *PtnCurrent = NULL;
   struct PartitionEntry *PtnNew = NULL;
   CHAR16 CurSlot[BOOT_PART_SIZE];
-  CHAR16 TempPartitionName[BOOT_PART_SIZE];
   CHAR16 NewSlot[BOOT_PART_SIZE];
+  CHAR16 SetInactive[MAX_SLOT_SUFFIX_SZ];
   UINT32 UfsBootLun = 0;
   BOOLEAN UfsGet = TRUE;
   BOOLEAN UfsSet = FALSE;
   struct BootPartsLinkedList *TempNode = NULL;
   EFI_STATUS Status;
   CHAR8 BootDeviceType[BOOT_DEV_NAME_SIZE_MAX];
+
+  /* Create the partition name string for active and non active slots*/
+  if (!StrnCmp (SetActive, (CONST CHAR16 *)L"_a",
+                StrLen ((CONST CHAR16 *)L"_a")))
+    StrnCpyS (SetInactive, MAX_SLOT_SUFFIX_SZ, (CONST CHAR16 *)L"_b",
+              StrLen ((CONST CHAR16 *)L"_b"));
+  else
+    StrnCpyS (SetInactive, MAX_SLOT_SUFFIX_SZ, (CONST CHAR16 *)L"_a",
+              StrLen ((CONST CHAR16 *)L"_a"));
 
   if (!HeadNode) {
     Status = GetMultiSlotPartsList ();
@@ -636,14 +645,11 @@ SwitchPtnSlots (CONST CHAR16 *SetActive, CONST CHAR16 *SetInactive )
     /* Find the pointer to partition table entry for active and non-active
      * slots*/
     for (i = 0; i < PartitionCount; i++) {
-      StrnCpyS (TempPartitionName,
-                 BOOT_PART_SIZE, PtnEntries[i].PartEntry.PartitionName,
-                  StrLen (PtnEntries[i].PartEntry.PartitionName));
-      if ((StrLen (TempPartitionName) == StrLen (CurSlot)) &&
-             !StrnCmp (TempPartitionName, CurSlot, 1 + StrLen (CurSlot))) {
+      if (!StrnCmp (PtnEntries[i].PartEntry.PartitionName, CurSlot,
+                    StrLen (CurSlot))) {
         PtnCurrent = &PtnEntries[i];
-      } else if ((StrLen (TempPartitionName) == StrLen (NewSlot)) &&
-                  !StrnCmp (TempPartitionName, NewSlot, 1 + StrLen (NewSlot))) {
+      } else if (!StrnCmp (PtnEntries[i].PartEntry.PartitionName, NewSlot,
+                           StrLen (NewSlot))) {
         PtnNew = &PtnEntries[i];
       }
     }
@@ -762,29 +768,19 @@ BOOLEAN
 PartitionHasMultiSlot (CONST CHAR16 *Pname)
 {
   UINT32 i;
-  UINT32 TempSlotCount = 0;
+  UINT32 SlotCount = 0;
   UINT32 Len = StrLen (Pname);
 
   for (i = 0; i < PartitionCount; i++) {
     if (!(StrnCmp (PtnEntries[i].PartEntry.PartitionName, Pname, Len))) {
       if (PtnEntries[i].PartEntry.PartitionName[Len] == L'_' &&
           (PtnEntries[i].PartEntry.PartitionName[Len + 1] == L'a' ||
-           PtnEntries[i].PartEntry.PartitionName[Len + 1] == L'b' ||
-           PtnEntries[i].PartEntry.PartitionName[Len + 1] == L'c'))
-                        ++TempSlotCount;
+           PtnEntries[i].PartEntry.PartitionName[Len + 1] == L'b'))
+        if (++SlotCount > MIN_SLOTS) {
+          return TRUE;
+        }
     }
   }
-
-  if (TempSlotCount > MAX_SLOTS) {
-     DEBUG ((EFI_D_ERROR,
-             "Slot count is invalid, might lead to unusual behaviour\n"));
-  }
-
-  SlotCount = TempSlotCount;
-  if (SlotCount > MIN_SLOTS) {
-    return TRUE;
-  }
-
   return FALSE;
 }
 
@@ -1140,11 +1136,16 @@ WriteGpt (INT32 Lun, UINT32 Sz, UINT8 *Gpt)
     return Ret;
   }
   /* Erase the entire card */
+
+#ifdef ASUS_BUILD
+  /* Don't erase Partition when update gpt
   Status = ErasePartition (BlockIo, BlockIoHandle[0].Handle);
   if (Status != EFI_SUCCESS) {
     DEBUG ((EFI_D_ERROR, "Error erasing the storage device: %r\n", Status));
     return FAILURE;
   }
+  */
+#endif
 
   /* write the protective MBR */
   Status = BlockIo->WriteBlocks (BlockIo, BlockIo->Media->MediaId, 0, BlkSz,
@@ -1198,6 +1199,15 @@ WriteGpt (INT32 Lun, UINT32 Sz, UINT8 *Gpt)
             Status));
     return FAILURE;
   }
+
+  Status = BlockIo->FlushBlocks (BlockIo);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((EFI_D_ERROR,
+            "Error flushing partition entries array for Secondary Table: %x\n",
+            Status));
+    return FAILURE;
+  }
+
   FlashingGpt = 0;
   gBS->SetMem ((VOID *)Gpt, Sz, 0x0);
 
@@ -1260,12 +1270,20 @@ STATIC struct PartitionEntry *
 GetBootPartitionEntry (Slot *BootSlot)
 {
   INT32 Index = INVALID_PTN;
-  CHAR16 PartitionName[MAX_GPT_NAME_SIZE] = L"boot";
 
-  StrnCatS (PartitionName, MAX_GPT_NAME_SIZE,
-            BootSlot->Suffix,
-            StrLen (BootSlot->Suffix));
-  Index = GetPartitionIndex (PartitionName);
+  if (StrnCmp ((CONST CHAR16 *)L"_a", BootSlot->Suffix,
+               StrLen (BootSlot->Suffix)) == 0) {
+    Index = GetPartitionIndex ((CHAR16 *)L"boot_a");
+  } else if (StrnCmp ((CONST CHAR16 *)L"_b", BootSlot->Suffix,
+                      StrLen (BootSlot->Suffix)) == 0) {
+    Index = GetPartitionIndex ((CHAR16 *)L"boot_b");
+  } else {
+    DEBUG ((EFI_D_ERROR, "GetBootPartitionEntry: No boot partition "
+                         "entry for slot %s\n",
+            BootSlot->Suffix));
+    return NULL;
+  }
+
   if (Index == INVALID_PTN) {
     DEBUG ((EFI_D_ERROR, "GetBootPartitionEntry: No boot partition entry "
                          "for slot %s, invalid index\n",
@@ -1323,7 +1341,7 @@ STATIC EFI_STATUS
 GetActiveSlot (Slot *ActiveSlot)
 {
   EFI_STATUS Status = EFI_SUCCESS;
-  Slot Slots[] = {{L"_a"}, {L"_b"}, {L"_c"}};
+  Slot Slots[] = {{L"_a"}, {L"_b"}};
   UINT64 Priority = 0;
 
   if (ActiveSlot == NULL) {
@@ -1331,7 +1349,7 @@ GetActiveSlot (Slot *ActiveSlot)
     return EFI_INVALID_PARAMETER;
   }
 
-  for (UINTN SlotIndex = 0; SlotIndex < SlotCount ; SlotIndex++) {
+  for (UINTN SlotIndex = 0; SlotIndex < ARRAY_SIZE (Slots); SlotIndex++) {
     struct PartitionEntry *BootPartition =
         GetBootPartitionEntry (&Slots[SlotIndex]);
     UINT64 BootPriority = 0;
@@ -1373,9 +1391,8 @@ GetActiveSlot (Slot *ActiveSlot)
 
     BootPriority = (SlotA->PartEntry.Attributes & PART_ATT_PRIORITY_VAL) >>
                    PART_ATT_PRIORITY_BIT;
-    RetryCount = (SlotA->PartEntry.Attributes & (IsMultiSlot_ABC ?
-               PART_ATT_MAX_RETRY_COUNT_VAL_ABC : PART_ATT_MAX_RETRY_COUNT_VAL))
-                 >> PART_ATT_MAX_RETRY_CNT_BIT;
+    RetryCount = (SlotA->PartEntry.Attributes & PART_ATT_MAX_RETRY_COUNT_VAL) >>
+                 PART_ATT_MAX_RETRY_CNT_BIT;
 
     if ((SlotA->PartEntry.Attributes & PART_ATT_ACTIVE_VAL) == 0 &&
         (SlotA->PartEntry.Attributes & PART_ATT_SUCCESSFUL_VAL) == 0 &&
@@ -1388,8 +1405,7 @@ GetActiveSlot (Slot *ActiveSlot)
           (~PART_ATT_SUCCESSFUL_VAL & ~PART_ATT_UNBOOTABLE_VAL);
       SlotA->PartEntry.Attributes |=
           (PART_ATT_PRIORITY_VAL | PART_ATT_ACTIVE_VAL |
-           (IsMultiSlot_ABC ? PART_ATT_MAX_RETRY_COUNT_VAL_ABC
-            : PART_ATT_MAX_RETRY_COUNT_VAL));
+           PART_ATT_MAX_RETRY_COUNT_VAL);
 
       GUARD (StrnCpyS (ActiveSlot->Suffix, ARRAY_SIZE (ActiveSlot->Suffix),
                        Slots[0].Suffix, StrLen (Slots[0].Suffix)));
@@ -1418,12 +1434,12 @@ SetActiveSlot (Slot *NewSlot, BOOLEAN ResetSuccessBit)
 {
   EFI_STATUS Status = EFI_SUCCESS;
   Slot CurrentSlot = {{0}};
-  Slot Slots[] = {{L"_a"}, {L"_b"}, {L"_c"}};
+  Slot *AlternateSlot = NULL;
+  Slot Slots[] = {{L"_a"}, {L"_b"}};
   BOOLEAN UfsGet = TRUE;
   BOOLEAN UfsSet = FALSE;
   UINT32 UfsBootLun = 0;
   CHAR8 BootDeviceType[BOOT_DEV_NAME_SIZE_MAX];
-  UINT32 TempSlotIndex;
   struct PartitionEntry *BootEntry = NULL;
 
   if (NewSlot == NULL) {
@@ -1432,6 +1448,13 @@ SetActiveSlot (Slot *NewSlot, BOOLEAN ResetSuccessBit)
   }
 
   GUARD (GetActiveSlot (&CurrentSlot));
+
+  if (StrnCmp (NewSlot->Suffix, Slots[0].Suffix, StrLen (Slots[0].Suffix)) ==
+      0) {
+    AlternateSlot = &Slots[1];
+  } else {
+    AlternateSlot = &Slots[0];
+  }
 
   BootEntry = GetBootPartitionEntry (NewSlot);
   if (BootEntry == NULL) {
@@ -1452,27 +1475,17 @@ SetActiveSlot (Slot *NewSlot, BOOLEAN ResetSuccessBit)
   }
 
   /* Reduce the priority and clear the active flag for alternate slot*/
-  for (TempSlotIndex = 0; TempSlotIndex < SlotCount; TempSlotIndex++) {
-    if (StrnCmp (NewSlot->Suffix, Slots[TempSlotIndex].Suffix,
-        StrLen (Slots[TempSlotIndex].Suffix))) {
-      BootEntry = GetBootPartitionEntry (&Slots[TempSlotIndex]);
-      if (BootEntry == NULL) {
-        DEBUG ((EFI_D_ERROR,
-                   "SetActiveSlot: No boot partition entry for slot %s\n",
-                      Slots[TempSlotIndex].Suffix));
-        return EFI_NOT_FOUND;
-      }
-
-      BootEntry->PartEntry.Attributes &=
-             ( ~PART_ATT_ACTIVE_VAL);
-      if (!IsMultiSlot_ABC) {
-       BootEntry->PartEntry.Attributes &=
-             (~PART_ATT_PRIORITY_VAL);
-       BootEntry->PartEntry.Attributes |=
-             (((UINT64)MAX_PRIORITY - 1) << PART_ATT_PRIORITY_BIT);
-      }
-    }
+  BootEntry = GetBootPartitionEntry (AlternateSlot);
+  if (BootEntry == NULL) {
+    DEBUG ((EFI_D_ERROR, "SetActiveSlot: No boot partition entry for slot %s\n",
+            AlternateSlot->Suffix));
+    return EFI_NOT_FOUND;
   }
+
+  BootEntry->PartEntry.Attributes &=
+      (~PART_ATT_PRIORITY_VAL & ~PART_ATT_ACTIVE_VAL);
+  BootEntry->PartEntry.Attributes |=
+      (((UINT64)MAX_PRIORITY - 1) << PART_ATT_PRIORITY_BIT);
 
   UpdatePartitionAttributes (PARTITION_ATTRIBUTES);
   if (StrnCmp (CurrentSlot.Suffix, NewSlot->Suffix,
@@ -1501,9 +1514,9 @@ SetActiveSlot (Slot *NewSlot, BOOLEAN ResetSuccessBit)
       }
     }
   } else {
-    DEBUG ((EFI_D_INFO, "New slot %s\n",
-            NewSlot->Suffix));
-    SwitchPtnSlots (NewSlot->Suffix, CurrentSlot.Suffix);
+    DEBUG ((EFI_D_INFO, "Alternate slot %s, New slot %s\n",
+            AlternateSlot->Suffix, NewSlot->Suffix));
+    SwitchPtnSlots (NewSlot->Suffix);
     MarkPtnActive (NewSlot->Suffix);
   }
   return EFI_SUCCESS;
@@ -1515,10 +1528,9 @@ EFI_STATUS HandleActiveSlotUnbootable (VOID)
   struct PartitionEntry *BootEntry = NULL;
   Slot ActiveSlot = {{0}};
   Slot *AlternateSlot = NULL;
-  Slot Slots[] = {{L"_a"}, {L"_b"}, {L"_c"}};
+  Slot Slots[] = {{L"_a"}, {L"_b"}};
   UINT64 Unbootable = 0;
   UINT64 BootSuccess = 0;
-  UINT64 Priority = 0;
 
   /* Mark current Slot as unbootable */
   GUARD (GetActiveSlot (&ActiveSlot));
@@ -1539,43 +1551,28 @@ EFI_STATUS HandleActiveSlotUnbootable (VOID)
     UpdatePartitionAttributes (PARTITION_ATTRIBUTES);
   }
 
-/* Selecting the next bootable slot with highest priotrity */
-  for (UINTN SlotIndex = 0; SlotIndex < SlotCount ; SlotIndex++) {
-    struct PartitionEntry *BootPartition =
-        GetBootPartitionEntry (&Slots[SlotIndex]);
-    UINT64 BootPriority = 0;
-    if (BootPartition == NULL) {
-      DEBUG ((EFI_D_ERROR, "GetActiveSlot: No boot partition "
-                           "entry for slot %s\n",
-              Slots[SlotIndex].Suffix));
-      return EFI_NOT_FOUND;
-    }
-
-    BootPriority =
-        (BootPartition->PartEntry.Attributes & PART_ATT_PRIORITY_VAL) >>
-        PART_ATT_PRIORITY_BIT;
-    Unbootable =
-        (BootPartition->PartEntry.Attributes & PART_ATT_UNBOOTABLE_VAL) >>
-        PART_ATT_UNBOOTABLE_BIT;
-    BootSuccess =
-        (BootPartition->PartEntry.Attributes & PART_ATT_SUCCESSFUL_VAL) >>
-        PART_ATT_SUCCESS_BIT;
-
-    if ((Unbootable == 0 &&
-           BootSuccess == 1) &&
-        (BootPriority > Priority)) {
-      AlternateSlot = &Slots[SlotIndex];
-      Priority = BootPriority;
-    }
+  if (StrnCmp (ActiveSlot.Suffix, Slots[0].Suffix, StrLen (Slots[0].Suffix)) ==
+      0) {
+    AlternateSlot = &Slots[1];
+  } else {
+    AlternateSlot = &Slots[0];
   }
 
-  if ( AlternateSlot == NULL ) {
-     DEBUG ((EFI_D_ERROR, "Alternate slot not Found"));
-     return EFI_NOT_FOUND;
-   }
-   DEBUG ((EFI_D_VERBOSE, "Alternate slot is %s\n",
-          AlternateSlot->Suffix));
+  /* Validate Aternate Slot is bootable */
+  BootEntry = GetBootPartitionEntry (AlternateSlot);
+  if (BootEntry == NULL) {
+    DEBUG ((EFI_D_ERROR, "HandleActiveSlotUnbootable: No boot "
+                         "partition entry for slot %s\n",
+            AlternateSlot->Suffix));
+    return EFI_NOT_FOUND;
+  }
 
+  Unbootable = (BootEntry->PartEntry.Attributes & PART_ATT_UNBOOTABLE_VAL) >>
+               PART_ATT_UNBOOTABLE_BIT;
+  BootSuccess = (BootEntry->PartEntry.Attributes & PART_ATT_SUCCESSFUL_VAL) >>
+                PART_ATT_SUCCESS_BIT;
+
+  if (Unbootable == 0 && BootSuccess == 1) {
     DEBUG (
         (EFI_D_INFO, "Alternate Slot %s is bootable\n", AlternateSlot->Suffix));
     GUARD (SetActiveSlot (AlternateSlot, FALSE));
@@ -1587,6 +1584,9 @@ EFI_STATUS HandleActiveSlotUnbootable (VOID)
     DEBUG ((EFI_D_ERROR, "HandleActiveSlotUnbootable: "
                          "gRT->Resetystem didn't work\n"));
     return EFI_LOAD_ERROR;
+  }
+
+  return EFI_LOAD_ERROR;
 }
 
 EFI_STATUS ClearUnbootable (VOID)
@@ -1617,7 +1617,7 @@ ValidateSlotGuids (Slot *BootableSlot)
 {
   EFI_STATUS Status = EFI_SUCCESS;
   struct PartitionEntry *BootEntry = NULL;
-  CHAR16 PartitionName[10];
+  CHAR16 PartitionName[] = L"abl_x";
   CONST struct PartitionEntry *PartEntry = NULL;
   CHAR8 BootDeviceType[BOOT_DEV_NAME_SIZE_MAX];
   UINT32 UfsBootLun = 0;
@@ -1629,18 +1629,6 @@ ValidateSlotGuids (Slot *BootableSlot)
             BootableSlot->Suffix));
     return EFI_NOT_FOUND;
   }
-
-  GetRootDeviceType (BootDeviceType, BOOT_DEV_NAME_SIZE_MAX);
-  if (IsLEVariant () &&
-      !IsDynamicPartitionSupport () &&
-      !AsciiStrnCmp (BootDeviceType, "EMMC", AsciiStrLen ("EMMC"))) {
-    StrnCpyS (PartitionName, sizeof (PartitionName),
-              L"system_x", sizeof (L"system_x"));
-  } else {
-    StrnCpyS (PartitionName, sizeof (PartitionName),
-              L"abl_x", sizeof (L"abl_x"));
-  }
-
 
   PartitionName[StrLen (PartitionName) - 1] =
       BootableSlot->Suffix[StrLen (BootableSlot->Suffix) - 1];
@@ -1664,6 +1652,7 @@ ValidateSlotGuids (Slot *BootableSlot)
     return EFI_DEVICE_ERROR;
   }
 
+  GetRootDeviceType (BootDeviceType, BOOT_DEV_NAME_SIZE_MAX);
   if (!AsciiStrnCmp (BootDeviceType, "UFS", AsciiStrLen ("UFS"))) {
     GUARD (UfsGetSetBootLun (&UfsBootLun, TRUE));
     if (UfsBootLun == 0x1 &&
@@ -1716,9 +1705,8 @@ FindBootableSlot (Slot *BootableSlot)
   BootSuccess = (BootEntry->PartEntry.Attributes & PART_ATT_SUCCESSFUL_VAL) >>
                 PART_ATT_SUCCESS_BIT;
   RetryCount =
-      (BootEntry->PartEntry.Attributes &
-       (IsMultiSlot_ABC ? PART_ATT_MAX_RETRY_COUNT_VAL_ABC :
-        PART_ATT_MAX_RETRY_COUNT_VAL)) >> PART_ATT_MAX_RETRY_CNT_BIT;
+      (BootEntry->PartEntry.Attributes & PART_ATT_MAX_RETRY_COUNT_VAL) >>
+      PART_ATT_MAX_RETRY_CNT_BIT;
 
   if (Unbootable == 0 && BootSuccess == 1) {
     DEBUG (
@@ -1731,6 +1719,12 @@ FindBootableSlot (Slot *BootableSlot)
       BootEntry->PartEntry.Attributes &= ~PART_ATT_MAX_RETRY_COUNT_VAL;
       BootEntry->PartEntry.Attributes |= RetryCount
                                          << PART_ATT_MAX_RETRY_CNT_BIT;
+
+#ifdef ASUS_AI2205_BUILD
+      AsciiSPrint(cmd_retry_count, sizeof(cmd_retry_count), " androidboot.retry.count=%ld", RetryCount);
+      DEBUG ((EFI_D_ERROR, "[ABL] current slot=%s, retry count=%ld\n", BootableSlot->Suffix, RetryCount));
+#endif
+
       UpdatePartitionAttributes (PARTITION_ATTRIBUTES);
       DEBUG ((EFI_D_INFO, "Active Slot %s is bootable, retry count %ld\n",
               BootableSlot->Suffix, RetryCount));
@@ -1744,8 +1738,7 @@ FindBootableSlot (Slot *BootableSlot)
   }
 
   /* Validate slot suffix and partition guids */
-  if (Status == EFI_SUCCESS &&
-      NAND != CheckRootDeviceType ()) {
+  if (Status == EFI_SUCCESS) {
     GUARD_OUT (ValidateSlotGuids (BootableSlot));
   }
   MarkPtnActive (BootableSlot->Suffix);
@@ -1920,68 +1913,4 @@ LoadAndValidateDtboImg (BootInfo *Info,
   }
 
   return TRUE;
-}
-
-EFI_STATUS NandABUpdatePartition (UINT32 UpdateType)
-{
-  Slot Slots[] = {{L"_a"}, {L"_b"}};
-  NandABAttr *NandAttr = NULL;
-  EFI_GUID Ptype = gEfiMiscPartitionGuid;
-  EFI_STATUS Status;
-  UINT32 PageSize;
-  size_t Size1 = sizeof (PtnEntries[0].PartEntry.PartitionName);
-  size_t Size2 = sizeof (NandAttr->Slots[0].SlotName);
-
-  GetPageSize (&PageSize);
-  Status = GetNandMiscPartiGuid (&Ptype);
-  if (Status != EFI_SUCCESS) {
-    return Status;
-  }
-
-  Status = ReadFromPartition (&Ptype, (VOID **)&NandAttr, PageSize);
-  if (Status != EFI_SUCCESS) {
-    DEBUG ((EFI_D_ERROR, "Error Reading from misc partition: %r\n", Status));
-    return Status;
-  }
-
-  if (!NandAttr) {
-    DEBUG ((EFI_D_ERROR, "Error in loading Data from misc partition\n"));
-    return EFI_INVALID_PARAMETER;
-  }
-
-  for (UINTN SlotIndex = 0; SlotIndex < ARRAY_SIZE (Slots); SlotIndex++) {
-    struct PartitionEntry *BootPartition =
-                      GetBootPartitionEntry (&Slots[SlotIndex]);
-    if (BootPartition == NULL) {
-      DEBUG ((EFI_D_ERROR, "GetActiveSlot: No boot partition "
-                    "entry for slot %s\n", Slots[SlotIndex].Suffix));
-      Status = EFI_NOT_FOUND;
-      goto Exit;
-    }
-
-    if (UpdateType == PTN_ENTRIES_TO_MISC) {
-      NandAttr->Slots[SlotIndex].Attributes =
-         (CHAR8)((BootPartition->PartEntry.Attributes >>
-                                 PART_ATT_PRIORITY_BIT)&0xff);
-      StrnCpyS (NandAttr->Slots[SlotIndex].SlotName, Size2 ,
-                    (BootPartition->PartEntry.PartitionName), Size1);
-    } else if (!StrnCmp (BootPartition->PartEntry.PartitionName,
-                       NandAttr->Slots[SlotIndex].SlotName, Size2)) {
-        BootPartition->PartEntry.Attributes =
-               (((UINT64)((NandAttr->Slots[SlotIndex].Attributes)&0xff)) <<
-                                                       PART_ATT_PRIORITY_BIT);
-    }
-  }
-
-  if (UpdateType == PTN_ENTRIES_TO_MISC) {
-    WriteToPartition (&Ptype, NandAttr, sizeof (struct NandABAttr));
-  }
-
-Exit:
-  if (NandAttr) {
-    FreePool (NandAttr);
-    NandAttr = NULL;
-  }
-
-  return Status;
 }

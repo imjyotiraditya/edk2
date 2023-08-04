@@ -35,6 +35,9 @@
 #define MAX_DESC_LEN 62
 #define UUID_STR_LEN 36
 
+#define FAST_ASUS_VENDOR      0x0b05
+#define FAST_ASUS_IDPRODUCT   0x4daf
+
 STATIC
 EFI_USB_DEVICE_DESCRIPTOR
 DeviceDescriptor = {
@@ -45,8 +48,8 @@ DeviceDescriptor = {
     0x00,                               // uint8  bDeviceSubClass;
     0x00,                               // uint8  bDeviceProtocol;
     64,                                 // uint8  bMaxPacketSize0;
-    FAST_BOOT_VENDOR,                   // uint16 idVendor;
-    FAST_BOOT_IDPRODUCT,                // uint16 idProduct;
+    FAST_ASUS_VENDOR,                   // uint16 idVendor;
+    FAST_ASUS_IDPRODUCT,                // uint16 idProduct;
     0x100,                              // uint16 bcdDevice;
     1,                                  // uint8  iManufacturer;
     2,                                  // uint8  iProduct;
@@ -64,8 +67,8 @@ SSDeviceDescriptor = {
     0x00,                               // uint8  bDeviceSubClass;
     0x00,                               // uint8  bDeviceProtocol;
     9,                                  // uint8  bMaxPacketSize0;
-    FAST_BOOT_VENDOR,                   // uint16 idVendor;
-    FAST_BOOT_IDPRODUCT,                // uint16 idProduct;
+    FAST_ASUS_VENDOR,                   // uint16 idVendor;
+    FAST_ASUS_IDPRODUCT,                // uint16 idProduct;
     0x100,                              // uint16 bcdDevice;
     1,                                  // uint8  iManufacturer;
     2,                                  // uint8  iProduct;

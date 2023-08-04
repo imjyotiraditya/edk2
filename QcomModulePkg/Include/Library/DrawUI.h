@@ -30,7 +30,6 @@
 #define _DRAWUI_H_
 
 #include <Uefi.h>
-
 /* 45 characters per line for portrait orientation
  * "720 (W) 1280(H)" : "sysfont2x" -- 720 /(8*2) = 45
  * "1080(W) 1920(H)" : "sysfont3x" -- 1080/(8*3) = 45
@@ -67,6 +66,7 @@
 
 #define MAX_MSG_SIZE 256
 #define MAX_RSP_SIZE 64
+#define PIXEL_SIZE 4
 
 typedef enum {
   PORTRAIT_MODE = 0,
@@ -83,7 +83,9 @@ typedef enum {
   DISPLAY_MENU_FASTBOOT,
   DISPLAY_MENU_UNLOCK_CRITICAL,
   DISPLAY_MENU_LOCK,
-  DISPLAY_MENU_LOCK_CRITICAL
+  DISPLAY_MENU_LOCK_CRITICAL,
+  DISPLAY_MENU_RED_DM_VERITY,
+  DISPLAY_MENU_RED_SNAPSHOT_CHECK,
 } DISPLAY_MENU_TYPE;
 
 typedef enum {
@@ -114,6 +116,11 @@ typedef enum {
   FFBM,
   QMMI,
   NOACTION,
+#ifdef ASUS_BUILD
+  SET_ACTIVE_A,
+  SET_ACTIVE_B,
+  CHECK_AVB,
+#endif
   OPTION_ACTION_MAX,
 } OPTION_ITEM_ACTION;
 
@@ -134,6 +141,12 @@ typedef struct {
   UINT32 Location;
   UINT32 Action;
 } MENU_MSG_INFO;
+
+#ifdef ASUS_BUILD
+typedef struct {
+  UINT32 Length;
+} MENU_MSG_LEN;
+#endif
 
 typedef struct {
   MENU_MSG_INFO *MsgInfo;
@@ -166,4 +179,29 @@ EFI_STATUS BackUpBootLogoBltBuffer (VOID);
 VOID RestoreBootLogoBitBuffer (VOID);
 VOID FreeBootLogoBltBuffer (VOID);
 VOID DrawMenuInit (VOID);
+
+
+#if defined ASUS_AI2205_BUILD
+void DrawLogo();
+void DrawAndroid();
+EFI_STATUS DrawAsusLogo_Charger(); //ASUS_BSP Booting+++
+EFI_STATUS DrawAndroidLogo();
+#endif
+
+#if defined ASUS_AI2205_BUILD && !CN_BUILD
+EFI_STATUS DrawEliteLogo();
+EFI_STATUS DrawAsusLogo();
+#endif
+
+#if defined ASUS_AI2205_BUILD && CN_BUILD
+EFI_STATUS DrawTencentLogo();
+EFI_STATUS DrawASUSCNLogo();
+EFI_STATUS DrawEliteCNLogo(UINT32 EWidth, UINT32 EHeight, UINT32 EliteCN[],int pos);
+EFI_STATUS DrawAndroidCNLogo();
+#endif
+
+#ifdef ASUS_BUILD
+EFI_STATUS DrawBarCode(CHAR8* ISNstr); //ASUS_BSP Display+++
+#endif
+
 #endif

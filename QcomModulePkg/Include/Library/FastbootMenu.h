@@ -32,4 +32,42 @@
 VOID DisplayFastbootMenu (VOID);
 EFI_STATUS
 UpdateFastbootOptionItem (UINT32 OptionItem, UINT32 *pLocation);
+
+#ifdef ASUS_BUILD
+#include <Library/DrawUI.h>
+#include <Protocol/EFIPIL.h>
+
+enum ASUSGraphicMenuOpt {
+    start_up = 0,
+    reboot_bootloader,
+    recovery_mode,
+    power_off
+};
+
+//WW Graphic images
+#define ENG_START_UP          "eng_start.bmp"
+#define ENG_REBOOT_bootloader "eng_restart_bootloader.bmp"
+#define ENG_RECOVERY_MODE     "eng_recovery_mode.bmp"
+#define ENG_POWER_OFF         "eng_power_off.bmp"
+
+//CN Graphic images
+#define CN_START_UP          "cn_start.bmp"
+#define CN_REBOOT_bootloader "cn_restart_bootloader.bmp"
+#define CN_RECOVERY_MODE     "cn_recovery_mode.bmp"
+#define CN_POWER_OFF         "cn_power_off.bmp"
+
+//TW Graphic images
+#define TW_START_UP          "tw_start.bmp"
+#define TW_REBOOT_bootloader "tw_restart_bootloader.bmp"
+#define TW_RECOVERY_MODE     "tw_recovery_mode.bmp"
+#define TW_POWER_OFF         "tw_power_off.bmp"
+
+EFI_STATUS SlotAUnbootableShowScreen();
+EFI_STATUS SlotBUnbootableShowScreen();
+EFI_STATUS UnbootableShowScreen();
+EFI_STATUS AsusHotKeyShowScreen(OPTION_MENU_INFO *OptionMenuInfo);
+EFI_STATUS UpdateASUSOptionItem (UINT32 OptionItem, UINT32 *pLocation);
+EFI_STATUS UpdateASUSGraphicOptionItem (UINT32 OptionItem, UINT32 *pLocation);
+EFI_STATUS AsusVerifiedStateShowScreen(OPTION_MENU_INFO *OptionMenuInfo);
+#endif
 #endif

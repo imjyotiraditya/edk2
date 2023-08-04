@@ -1,4 +1,4 @@
-/* Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -25,9 +25,47 @@
  * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
  * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+
+/*
+ * Changes from Qualcomm Innovation Center are provided under the following license:
+ *
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ *
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted (subject to the limitations in the
+ *  disclaimer below) provided that the following conditions are met:
+ *
+ *      * Redistributions of source code must retain the above copyright
+ *        notice, this list of conditions and the following disclaimer.
+ *
+ *      * Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and/or other materials provided
+ *        with the distribution.
+ *
+ *      * Neither the name of Qualcomm Innovation Center, Inc. nor the names of its
+ *        contributors may be used to endorse or promote products derived
+ *        from this software without specific prior written permission.
+ *
+ *  NO EXPRESS OR IMPLIED LICENSES TO ANY PARTY'S PATENT RIGHTS ARE
+ *  GRANTED BY THIS LICENSE. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT
+ *  HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED
+ *   WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+ *  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ *  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ *  ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ *  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+ *  GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ *  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+ *  IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+ *  OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
+ *  IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
+#include <Library/Debug.h>
 #include <Library/DeviceInfo.h>
 #include <Library/DrawUI.h>
 #include <Library/MemoryAllocationLib.h>
@@ -41,7 +79,6 @@
 #include <Protocol/EFIVerifiedBoot.h>
 #include <Uefi.h>
 
-#if VERIFIED_BOOT || VERIFIED_BOOT_2
 #define FINGERPRINT_LINE_LEN 16
 #define FINGERPRINT_FORMATED_LINE_LEN FINGERPRINT_LINE_LEN + 5
 #define VERIFIED_BOOT_OPTION_NUM 5
@@ -134,7 +171,7 @@ STATIC WARNING_MENU_MSG_INFO mMenuMsgInfo[] = {
               0,
               NOACTION}},
         [DISPLAY_MENU_RED] =
-            {{{"<!>"},
+            {{{"\n\n<!>"},
               BIG_FACTOR,
               BGR_RED,
               BGR_BLACK,
@@ -143,14 +180,14 @@ STATIC WARNING_MENU_MSG_INFO mMenuMsgInfo[] = {
               NOACTION},
              {{"\n\nYour device is corrupt. It can't be trusted and will not "
                "boot\n\n"
-               "Visit this link on another device:\n"},
+               "Merge not complete, shutdown after 10s\n\n"},
               COMMON_FACTOR,
               BGR_WHITE,
               BGR_BLACK,
               COMMON,
               0,
               NOACTION},
-             {{"g.co/ABH\n\n\n"},
+             {{"Please contact service center for help\n\n"},
               COMMON_FACTOR,
               BGR_RED,
               BGR_BLACK,
@@ -165,7 +202,7 @@ STATIC WARNING_MENU_MSG_INFO mMenuMsgInfo[] = {
               0,
               NOACTION}},
         [DISPLAY_MENU_EIO] =
-            {{{"<!>"},
+            {{{"\n\n<!>"},
               BIG_FACTOR,
               BGR_RED,
               BGR_BLACK,
@@ -174,14 +211,14 @@ STATIC WARNING_MENU_MSG_INFO mMenuMsgInfo[] = {
               NOACTION},
              {{"\n\nYour device is corrupt. It can't be trusted and may "
                "not work properly\n\n"
-               "Visit this link on another device:\n"},
+               "dm-verity corruption, shutdown after 10s\n\n"},
               COMMON_FACTOR,
               BGR_WHITE,
               BGR_BLACK,
               COMMON,
               0,
               NOACTION},
-             {{"g.co/ABH\n\n\n"},
+             {{"Please contact service center for help\n\n\n"},
               COMMON_FACTOR,
               BGR_RED,
               BGR_BLACK,
@@ -193,6 +230,68 @@ STATIC WARNING_MENU_MSG_INFO mMenuMsgInfo[] = {
               BGR_WHITE,
               BGR_BLACK,
               ALIGN_LEFT,
+              0,
+              NOACTION},
+             {{""},
+              COMMON_FACTOR,
+              BGR_WHITE,
+              BGR_BLACK,
+              COMMON,
+              0,
+              NOACTION}},
+        [DISPLAY_MENU_RED_DM_VERITY] =
+            {{{"\n\n<!>"},
+              BIG_FACTOR,
+              BGR_RED,
+              BGR_BLACK,
+              COMMON,
+              0,
+              NOACTION},
+             {{"\n\nYour device is corrupt. It can't be trusted and will not "
+               "boot\n\n"
+               "dm-verity corruption, shutdown after 10s\n\n"},
+              COMMON_FACTOR,
+              BGR_WHITE,
+              BGR_BLACK,
+              COMMON,
+              0,
+              NOACTION},
+             {{"Please contact service center for help\n\n\n"},
+              COMMON_FACTOR,
+              BGR_RED,
+              BGR_BLACK,
+              COMMON,
+              0,
+              NOACTION},
+             {{""},
+              COMMON_FACTOR,
+              BGR_WHITE,
+              BGR_BLACK,
+              COMMON,
+              0,
+              NOACTION}},
+        [DISPLAY_MENU_RED_SNAPSHOT_CHECK] =
+            {{{"\n\n<!>"},
+              BIG_FACTOR,
+              BGR_RED,
+              BGR_BLACK,
+              COMMON,
+              0,
+              NOACTION},
+             {{"\n\nYour device is corrupt. It can't be trusted and will not "
+               "boot\n\n"
+               "Merge not complete, shutdown after 10s\n\n"},
+              COMMON_FACTOR,
+              BGR_WHITE,
+              BGR_BLACK,
+              COMMON,
+              0,
+              NOACTION},
+             {{"Contact service center for help\n\n\n"},
+              COMMON_FACTOR,
+              BGR_RED,
+              BGR_BLACK,
+              COMMON,
               0,
               NOACTION},
              {{""},
@@ -427,6 +526,10 @@ VerifiedBootOptionMenuShowScreen (OPTION_MENU_INFO *OptionMenuInfo)
   UINT32 i = 0;
   UINT32 j = 0;
 
+  if (!Is_VERIFIED_BOOT_2 ()) {
+    return EFI_UNSUPPORTED;
+  }
+
   /* Clear the screen before launch the verified boot option menu */
   gST->ConOut->ClearScreen (gST->ConOut);
   ZeroMem (&OptionMenuInfo->Info, sizeof (MENU_OPTION_ITEM_INFO));
@@ -469,6 +572,10 @@ VerifiedBootMenuUpdateShowScreen (OPTION_MENU_INFO *OptionMenuInfo)
   UINT32 Height = 0;
   MENU_MSG_INFO *MsgStrInfo = NULL;
 
+  if (!Is_VERIFIED_BOOT_2 ()) {
+    return EFI_UNSUPPORTED;
+  }
+
   MsgStrInfo = AllocateZeroPool (sizeof (MENU_MSG_INFO));
   if (MsgStrInfo == NULL) {
     DEBUG ((EFI_D_ERROR, "Failed to allocate zero pool.\n"));
@@ -508,6 +615,10 @@ VerifiedBootMenuShowScreen (OPTION_MENU_INFO *OptionMenuInfo,
   EFI_STATUS Status = EFI_SUCCESS;
   UINT32 Location = 0;
   UINT32 Height = 0;
+
+  if (!Is_VERIFIED_BOOT_2 ()) {
+    return EFI_UNSUPPORTED;
+  }
 
   ZeroMem (&OptionMenuInfo->Info, sizeof (MENU_OPTION_ITEM_INFO));
 
@@ -596,6 +707,10 @@ DisplayVerifiedBootMenu (DISPLAY_MENU_TYPE Type)
   EFI_STATUS Status = EFI_SUCCESS;
   OPTION_MENU_INFO *OptionMenuInfo;
 
+  if (!Is_VERIFIED_BOOT_2 ()) {
+    return EFI_UNSUPPORTED;
+  }
+
   if (IsEnableDisplayMenuFlagSupported ()) {
     OptionMenuInfo = &gMenuInfo;
     DrawMenuInit ();
@@ -619,4 +734,3 @@ DisplayVerifiedBootMenu (DISPLAY_MENU_TYPE Type)
 
   return Status;
 }
-#endif

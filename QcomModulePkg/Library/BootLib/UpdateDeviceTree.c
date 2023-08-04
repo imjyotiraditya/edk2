@@ -26,6 +26,42 @@
  * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+/*
+ * Changes from Qualcomm Innovation Center are provided under the following license:
+ *
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ *
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted (subject to the limitations in the
+ *  disclaimer below) provided that the following conditions are met:
+ *
+ *      * Redistributions of source code must retain the above copyright
+ *        notice, this list of conditions and the following disclaimer.
+ *
+ *      * Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and/or other materials provided
+ *        with the distribution.
+ *
+ *      * Neither the name of Qualcomm Innovation Center, Inc. nor the names of its
+ *        contributors may be used to endorse or promote products derived
+ *        from this software without specific prior written permission.
+ *
+ *  NO EXPRESS OR IMPLIED LICENSES TO ANY PARTY'S PATENT RIGHTS ARE
+ *  GRANTED BY THIS LICENSE. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT
+ *  HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED
+ *   WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+ *  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ *  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ *  ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ *  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+ *  GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ *  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+ *  IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+ *  OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
+ *  IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 /* Supporting function of UpdateDeviceTree()
  * Function adds memory map entries to the device tree binary
  * dev_tree_add_mem_info() is called at every time when memory type matches
@@ -47,8 +83,7 @@
 #define NUM_SPLASHMEM_PROP_ELEM 4
 #define DEFAULT_CELL_SIZE 2
 #define NUM_RNG_SEED_WORDS 512
-#define DDRGETINFO_BASE_REVISION 0x0000000000050000
-#define SCT_CONFIG_BASE_REVISION 0x0000000000070000
+#define NUM_RAMDUMP_PROP_ELEM   2
 
 STATIC struct FstabNode FstabTable = {"/firmware/android/fstab", "dev",
                                       "/soc/"};
@@ -74,7 +109,7 @@ PrintSplashMemInfo (CONST CHAR8 *data, INT32 datalen)
           val[1], val[2], val[3]));
 }
 
-STATIC EFI_STATUS
+EFI_STATUS
 GetDDRInfo (struct ddr_details_entry_info *DdrInfo)
 {
   EFI_DDRGETINFO_PROTOCOL *DdrInfoIf;
@@ -97,46 +132,13 @@ GetDDRInfo (struct ddr_details_entry_info *DdrInfo)
   }
 
   Revision = DdrInfoIf->Revision;
-  DEBUG ((EFI_D_VERBOSE, "GetDDRInfo: DDR Header Revision =0x%x\n", Revision));
+  DEBUG ((EFI_D_VERBOSE, "DDR Header Revision =0x%x\n", Revision));
 
-  if (Revision < DDRGETINFO_BASE_REVISION) {
+  if (Revision < EFI_DDRGETINFO_PROTOCOL_REVISION) {
     DEBUG ((EFI_D_VERBOSE,
             "ddr_device_rank, HBB not supported in Revision=0x%x\n", Revision));
     return EFI_UNSUPPORTED;
   }
-
-  return Status;
-}
-
-STATIC EFI_STATUS
-GetSCTConfig (UINT8 *SCTConfig)
-{
-  EFI_DDRGETINFO_PROTOCOL *DdrInfoIf;
-  EFI_STATUS Status;
-  UINT64 Revision;
-
-  Status = gBS->LocateProtocol (&gEfiDDRGetInfoProtocolGuid, NULL,
-                                (VOID **)&DdrInfoIf);
-  if (Status != EFI_SUCCESS) {
-    DEBUG ((EFI_D_VERBOSE,
-            "INFO: Unable to get DDR Info protocol:%r\n",
-            Status));
-    return Status;
-  }
-
-  Revision = DdrInfoIf->Revision;
-  if (Revision < SCT_CONFIG_BASE_REVISION) {
-    DEBUG ((EFI_D_VERBOSE,
-            "SCTConfig not supported in Revision=0x%x\n", Revision));
-    return EFI_UNSUPPORTED;
-  }
-
-  Status = DdrInfoIf->GetDDRSCTConfig (DdrInfoIf, SCTConfig);
-  if (EFI_ERROR (Status)) {
-    DEBUG ((EFI_D_ERROR, "INFO: GetSCTConfig failed\n"));
-    return Status;
-  }
-
   return Status;
 }
 
@@ -192,6 +194,70 @@ DisableDisplay (VOID)
              "ERROR: Fail to turn display off,Status=%d\n", Status));
     }
   }
+}
+
+STATIC EFI_STATUS
+UpdateRamDumpMemInfo (VOID *fdt)
+{
+  EFI_STATUS Status = EFI_SUCCESS;
+  CONST struct fdt_property *Prop = NULL;
+  INT32 PropLen = 0;
+  INT32 Ret     = 0;
+  INT32 OffSet  = 0;
+  UINT32 CONST RamdumpMemPropSize = NUM_RAMDUMP_PROP_ELEM * sizeof (UINT32);
+
+  /* Ramdump address same as splash */
+  Status =
+      gRT->GetVariable ((CHAR16 *)L"DisplaySplashBufferInfo",
+                        &gQcomTokenSpaceGuid, NULL, &splashBufSize, &splashBuf);
+  if (Status != EFI_SUCCESS) {
+    DEBUG ((EFI_D_ERROR, "Unable to get splash buffer info, %r\n", Status));
+    return Status;
+  }
+
+  /* Get offset of the ramdump memory reservation node */
+  OffSet = FdtPathOffset (fdt, "/soc/disp_rdump_region");
+  if (OffSet < 0) {
+    DEBUG ((EFI_D_WARN, "ramdump region not found in device tree\n"));
+    return EFI_NOT_FOUND;
+  }
+
+  /* Get the property that specifies the ramdump memory details */
+  Prop = fdt_get_property (fdt, OffSet, "reg", &PropLen);
+  if (!Prop) {
+    DEBUG ((EFI_D_ERROR, "ERROR: Could not find the ramdump reg property\n"));
+    return EFI_NOT_FOUND;
+  }
+
+   /*
+   * The format of the "reg" field is as follows:
+   *       <FBAddress FBSize>
+   * The expected size of this property is 2 * sizeof(UINT32)
+   */
+  if (PropLen != RamdumpMemPropSize) {
+    DEBUG (
+        (EFI_D_ERROR,
+         "ERROR: Ramdump mem reservation node size. Expected: %d, Actual: %d\n",
+         RamdumpMemPropSize, PropLen));
+    return EFI_BAD_BUFFER_SIZE;
+  }
+
+  /* First, update the FBAddress */
+  if (CHECK_ADD64 ((UINT64)Prop->data, sizeof (UINT32))) {
+    DEBUG ((EFI_D_ERROR, "ERROR: integer Overflow while updating FBAddress"));
+    return EFI_BAD_BUFFER_SIZE;
+  }
+  splashBuf.uFrameAddr = cpu_to_fdt32 (splashBuf.uFrameAddr);
+  memcpy ((CHAR8 *)Prop->data, &splashBuf.uFrameAddr, sizeof (UINT32));
+
+  /* Update the property value in place */
+  Ret = fdt_setprop_inplace (fdt, OffSet, "reg", Prop->data, PropLen);
+  if (Ret < 0) {
+    DEBUG ((EFI_D_ERROR, "ERROR: Could not update ramdump mem info\n"));
+    return EFI_NO_MAPPING;
+  }
+
+  return Status;
 }
 
 STATIC EFI_STATUS
@@ -720,7 +786,7 @@ GetDDrRegionsInfo (struct ddr_regions_data_info *DdrRegionsInfo)
   Revision = pDDrGetInfoProtocol->Revision;
   DEBUG ((EFI_D_VERBOSE, "DDR Header Revision =0x%x\n", Revision));
 
-  if (Revision < DDRGETINFO_BASE_REVISION) {
+  if (Revision < EFI_DDRGETINFO_PROTOCOL_REVISION) {
     DEBUG ((EFI_D_VERBOSE,
             "GetDDRMappedRegions not supported in Revision=0x%x\n", Revision));
     return EFI_UNSUPPORTED;
@@ -942,7 +1008,6 @@ UpdateDeviceTree (VOID *fdt,
 {
   INT32 ret = 0;
   UINT32 offset;
-  UINT32 LlccOffset;
   UINT32 PaddSize = 0;
   UINT64 RandomSeed = 0;
   UINT8 DdrDeviceType;
@@ -957,7 +1022,6 @@ UpdateDeviceTree (VOID *fdt,
   UINT32 Hbb;
   UINT64 UpdateDTStartTime = GetTimerCountms ();
   UINT32 Index;
-  UINT8 SCTConfig;
 
 
   /* Check the device tree header */
@@ -1013,34 +1077,6 @@ UpdateDeviceTree (VOID *fdt,
               ret));
     } else {
       DEBUG ((EFI_D_VERBOSE, "ddr_device_type is added to memory node\n"));
-    }
-
-    if (!IsDDRSupportsSCTConfig ()) {
-      DEBUG ((EFI_D_VERBOSE, "DDR doesn't support SCT Config\n"));
-    } else {
-      Status = GetSCTConfig (&SCTConfig);
-      if (Status != EFI_SUCCESS) {
-        DEBUG ((EFI_D_ERROR, "INFO: Unable to get SCT Config:%r\n", Status));
-        return EFI_UNSUPPORTED;
-      } else {
-        DEBUG ((EFI_D_VERBOSE, "SCT Config: %d\n", SCTConfig));
-        ret = FdtPathOffset (fdt, "/soc/cache-controller");
-        if (ret < 0) {
-          DEBUG ((EFI_D_ERROR, "ERROR: Could not find LLCC node ...\n"));
-          return EFI_NOT_FOUND;
-        }
-
-        LlccOffset = ret;
-        FdtPropUpdateFunc (fdt, LlccOffset, (CONST char *)"qcom,sct-config",
-                         (UINT32)SCTConfig, fdt_appendprop_u32, ret);
-        if (ret) {
-          DEBUG ((EFI_D_ERROR,
-                "ERROR: Cannot update SCT Config [qcom,sct-config]:0x%x\n",
-                 ret));
-        } else {
-          DEBUG ((EFI_D_VERBOSE, "qcom,sct-config is added to LLCC node\n"));
-        }
-      }
     }
 
     if (!FixedPcdGetBool (EnableUpdateRankChannel)) {
@@ -1105,6 +1141,7 @@ OutofUpdateRankChannel:
   UpdateSplashMemInfo (fdt);
   UpdateDemuraInfo (fdt);
   UpdatePLLCodesInfo (fdt);
+  UpdateRamDumpMemInfo (fdt);
 
   /* Get offset of the chosen node */
   ret = FdtPathOffset (fdt, "/chosen");

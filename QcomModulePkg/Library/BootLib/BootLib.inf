@@ -71,6 +71,12 @@
 	ThreadStack.c
 	DisplayCtrl.c
         Bootconfig.c
+	EarlyEthernet.c
+	abl.c
+	SecRSATestApp.c
+	TLMM.c
+	Md5.h
+	Md5.c
 
 [Packages]
 	ArmPkg/ArmPkg.dec
@@ -99,6 +105,9 @@
 	AvbLib
 	UbsanLib
 
+[LibraryClasses.AARCH64]
+	AesLib
+
 [Guids]
 	gEfiFileInfoGuid
 	gEfiSdRemovableGuid
@@ -122,6 +131,7 @@
 	gEfiUfsLU5Guid
 	gEfiUfsLU6Guid
 	gEfiUfsLU7Guid
+	gEfiImageFvNameGuid
 
 [Protocols]
 	gEfiSimpleTextInputExProtocolGuid
@@ -154,6 +164,16 @@
 	gEfiDDRGetInfoProtocolGuid
 	gEfiKernelProtocolGuid
 	gEfiDisplayPowerStateProtocolGuid
+	gQcomPmicGpioProtocolGuid
+	gEfiTLMMProtocolGuid
+	gEfiQcomSecRSAProtocolGuid
+	gEfiQcomASN1X509ProtocolGuid
+	gQcomPmicHapticsProtocolGuid
+	gEfiHashAlgorithmSha256Guid
+	gEfiHash2ProtocolGuid
+	gEfiBmpProtocolGuid
+	gEfiPilProtocolGuid
+	gEfiGraphicsOutputProtocolGuid
 
 [FixedPcd]
 	gArmTokenSpaceGuid.PcdSystemMemoryBase

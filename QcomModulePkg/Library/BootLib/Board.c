@@ -27,42 +27,6 @@
  * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-/*
- * Changes from Qualcomm Innovation Center are provided under the following license:
- *
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
- *
- *  Redistribution and use in source and binary forms, with or without
- *  modification, are permitted (subject to the limitations in the
- *  disclaimer below) provided that the following conditions are met:
- *
- *      * Redistributions of source code must retain the above copyright
- *        notice, this list of conditions and the following disclaimer.
- *
- *      * Redistributions in binary form must reproduce the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer in the documentation and/or other materials provided
- *        with the distribution.
- *
- *      * Neither the name of Qualcomm Innovation Center, Inc. nor the names of its
- *        contributors may be used to endorse or promote products derived
- *        from this software without specific prior written permission.
- *
- *  NO EXPRESS OR IMPLIED LICENSES TO ANY PARTY'S PATENT RIGHTS ARE
- *  GRANTED BY THIS LICENSE. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT
- *  HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED
- *   WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- *  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
- *  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
- *  ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- *  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
- *  GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- *  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
- *  IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- *  OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
- *  IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
-
 #include "AutoGen.h"
 #include <Board.h>
 #include <Library/BootImage.h>
@@ -613,6 +577,56 @@ UfsGetSetBootLun (UINT32 *UfsBootlun, BOOLEAN IsGet)
   return Status;
 }
 
+#ifdef ASUS_BUILD
+// +++ ASUS_BSP : add for ASUS dongle unlock
+EFI_STATUS
+GetSerialNum(UINT32 *StrSerialNum)
+{
+  EFI_STATUS Status = EFI_INVALID_PARAMETER;
+  MEM_CARD_INFO CardInfoData;
+  EFI_MEM_CARDINFO_PROTOCOL *CardInfo;
+  UINT32 SerialNo;
+  HandleInfo HandleInfoList[HANDLE_MAX_INFO_LIST];
+  UINT32 MaxHandles = ARRAY_SIZE (HandleInfoList);
+  MemCardType Type = EMMC;
+
+  Type = CheckRootDeviceType ();
+  if (Type == UNKNOWN)
+    return EFI_NOT_FOUND;
+
+  Status = GetDeviceHandleInfo (HandleInfoList, MaxHandles, Type);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Status =
+      gBS->HandleProtocol (HandleInfoList[0].Handle,
+                           &gEfiMemCardInfoProtocolGuid, (VOID **)&CardInfo);
+  if (Status != EFI_SUCCESS) {
+    DEBUG ((EFI_D_ERROR, "Error locating MemCardInfoProtocol:%x\n", Status));
+    return Status;
+  }
+
+  if (CardInfo->GetCardInfo (CardInfo, &CardInfoData) == EFI_SUCCESS) {
+    if (Type == UFS) {
+      Status = gBS->CalculateCrc32 (CardInfoData.product_serial_num,
+                                    CardInfoData.serial_num_len, &SerialNo);
+      if (Status != EFI_SUCCESS) {
+        DEBUG ((EFI_D_ERROR,
+                "Error calculating Crc of the unicode serial number: %x\n",
+                Status));
+        return Status;
+      }
+	  *StrSerialNum = SerialNo;
+	  } else {
+	  *StrSerialNum = *(UINT32 *)CardInfoData.product_serial_num;
+    }
+  }
+  return Status;
+}
+// --- ASUS_BSP : add for ASUS dongle unlock
+#endif
+
 EFI_STATUS
 BoardSerialNum (CHAR8 *StrSerialNum, UINT32 Len)
 {
@@ -661,6 +675,17 @@ BoardSerialNum (CHAR8 *StrSerialNum, UINT32 Len)
      * to maintain uniformity across the system. */
     ToLower (StrSerialNum);
   }
+
+#ifdef ASUS_BUILD
+  CHAR8 TempChar[64];
+
+  // +++ ASUS_BSP : add for ssn info
+  GetSSNNum((CHAR8 *)TempChar, sizeof(TempChar));
+  AsciiStrnCpyS (StrSerialNum, sizeof(TempChar), TempChar, sizeof(TempChar));
+  DEBUG((EFI_D_ERROR, "[ABL] serial num = %a\n", StrSerialNum));
+  // --- ASUS_BSP : add for ssn info
+#endif
+
   return Status;
 }
 
@@ -687,7 +712,14 @@ CHAR8 *BoardPlatformChipBaseBand (VOID)
 
 EFI_PLATFORMINFO_PLATFORM_TYPE BoardPlatformType (VOID)
 {
+#ifdef ASUS_BUILD
+// +++ ASUS_BSP : add for ASUS DT ID
+  DEBUG ((EFI_D_ERROR,"[ABL] BoardPlatformType  = %d\n", GetDeviceTreeID()));
+  return GetDeviceTreeID();
+// --- ASUS_BSP : add for ASUS DT ID
+#else
   return platform_board_info.PlatformInfo.platform;
+#endif
 }
 
 UINT32 BoardPlatformVersion (VOID)
@@ -698,11 +730,6 @@ UINT32 BoardPlatformVersion (VOID)
 UINT32 BoardPlatformSubType (VOID)
 {
   return platform_board_info.PlatformInfo.subtype;
-}
-
-UINT32 BoardOEMVariantId (VOID)
-{
-  return platform_board_info.PlatformInfo.OEMVariantID;
 }
 
 BOOLEAN BoardPlatformFusion (VOID)

@@ -26,9 +26,46 @@
  * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+/*
+ * Changes from Qualcomm Innovation Center are provided under the following license:
+ *
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ *
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted (subject to the limitations in the
+ *  disclaimer below) provided that the following conditions are met:
+ *
+ *      * Redistributions of source code must retain the above copyright
+ *        notice, this list of conditions and the following disclaimer.
+ *
+ *      * Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and/or other materials provided
+ *        with the distribution.
+ *
+ *      * Neither the name of Qualcomm Innovation Center, Inc. nor the names of its
+ *        contributors may be used to endorse or promote products derived
+ *        from this software without specific prior written permission.
+ *
+ *  NO EXPRESS OR IMPLIED LICENSES TO ANY PARTY'S PATENT RIGHTS ARE
+ *  GRANTED BY THIS LICENSE. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT
+ *  HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED
+ *   WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+ *  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ *  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ *  ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ *  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+ *  GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ *  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+ *  IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+ *  OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
+ *  IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
+#include <Library/Debug.h>
 #include <Library/DrawUI.h>
 #include <Library/Fonts.h>
 #include <Library/MemoryAllocationLib.h>
@@ -37,6 +74,20 @@
 #include <Protocol/GraphicsOutput.h>
 #include <Uefi.h>
 #include <Protocol/HiiFont.h>
+
+#if defined  ASUS_AI2205_BUILD && !CN_BUILD
+#include <Library/AsusLogo.h>
+#include <Library/AsusLogo_charger.h>
+#include <Library/AsusAndroid.h>
+#endif
+
+#if defined  ASUS_AI2205_BUILD && CN_BUILD
+#include <Library/AsusAndroid.h>
+#include <Library/AsusLogoCN.h>
+#include <Library/AsusLogo_charger.h>
+#include <Library/AsusAndroidCN.h>
+extern char cid_name[32];
+#endif
 
 STATIC EFI_GRAPHICS_OUTPUT_PROTOCOL *GraphicsOutputProtocol;
 STATIC EFI_GRAPHICS_OUTPUT_BLT_PIXEL *LogoBlt;
@@ -568,6 +619,658 @@ SetMenuMsgInfo (MENU_MSG_INFO *MenuMsgInfo,
   MenuMsgInfo->Location = Location;
   MenuMsgInfo->Action = Action;
 }
+
+#ifdef ASUS_BUILD
+#include <Library/barcode.h>
+
+// ASUS_BSP +++
+EFI_STATUS DrawBarCode(CHAR8 *ISNstr)
+{
+    EFI_STATUS     Status = EFI_SUCCESS;
+    void           *pBitmapImage = NULL;
+    UINT32         Height = GetResolutionHeight();
+    UINT32         Width = GetResolutionWidth();
+    UINTN          centerX;
+    UINTN          centerY;
+    UINT32         isnLen = strlen(ISNstr);
+    UINT32         bitmapHeight = (isnLen+2)*BARCODE_WIDTH_PIXEL+BARCODE_EDGE_WIDTH_PIXEL*2;
+    UINT32         bitmapSize = (isnLen+2)*BARCODE_WIDTH_PIXEL*BARCODE_HEIGHT_PIXEL*PIXEL_SIZE +
+                                BARCODE_EDGE_WIDTH_PIXEL*BARCODE_HEIGHT_PIXEL*PIXEL_SIZE*2;
+
+    pBitmapImage = AllocateZeroPool(bitmapSize);
+
+    if (pBitmapImage == NULL) {
+        DEBUG((EFI_D_ERROR, "DrawBarCode: AllocateZeroPool failed\n"));
+        goto Exit;
+    } else {
+
+        UINT32  pattern[2] = {0x00000000, 0xFFFFFFF};
+        UINT32  *pData     = (UINT32*)pBitmapImage;
+        UINT32  i, j, x, y;
+        UINT32  barcode;
+        UINT32  mask;
+        UINT32  pixelWidth;
+        CHAR8   c;
+
+        DEBUG((EFI_D_VERBOSE, "DrawBarCode: start fill isn barcode bitmap\n"));
+
+        //1. fill front edge bar
+        for (y = 0; y < BARCODE_EDGE_WIDTH_PIXEL; y++)
+            for (x = 0; x < BARCODE_HEIGHT_PIXEL; x++)
+                *pData++ = pattern[BARCODE_WHITE];
+
+        //2. fill barcode
+        for (i = 0; i < (isnLen+2); i++) {
+            if (i == 0 || i == isnLen+1)
+                c = '*';
+            else
+                c = ISNstr[i-1];
+            if (c >=  0x30 && c <= 0x39) {
+                barcode = mBarCode[(int)(c-0x30)];
+            } else if (c >= 0x41 && c <= 0x5A) {
+                barcode = mBarCode[(int)(c-0x41+10)];
+            } else if (c >= 0x61 && c <= 0x7A) {
+                c -= 32;
+                barcode = mBarCode[(int)(c-0x41+10)];
+            } else if (c == '*') {
+                barcode = BARCODE_START_END;
+            } else {
+                barcode = 0;
+                DEBUG((EFI_D_ERROR, "unrecognize char, empty it\n"));
+            }
+
+            for (j = 0; j < BARCODE_CODE_SIZE; j++) {
+
+                pixelWidth = BARCODE_BAR_PIXEL;
+                mask = 0x0001;
+                mask = mask << (BARCODE_CODE_SIZE - j - 1);
+                if (barcode & mask)
+                    pixelWidth = BARCODE_BAR_PIXEL * 2;
+
+                for (y = 0; y < pixelWidth; y++)
+                    for (x = 0; x < BARCODE_HEIGHT_PIXEL; x++)
+                        *pData++ = pattern[(j % 2) ? BARCODE_WHITE : BARCODE_BLACK];
+            }
+
+            //fill gap between each barcode
+            for (y = 0; y < BARCODE_BAR_PIXEL; y++)
+                for (x = 0; x < BARCODE_HEIGHT_PIXEL; x++)
+                    *pData++ = pattern[BARCODE_WHITE];
+        }
+
+        DEBUG((EFI_D_VERBOSE, "DrawBarCode: fill barcode OK!\n"));
+
+        //3. fill end edge bar
+        for (y = 0; y < BARCODE_EDGE_WIDTH_PIXEL; y++)
+            for (x = 0; x < BARCODE_HEIGHT_PIXEL; x++)
+                *pData++ = pattern[1];
+    }
+
+    /* Set image position */
+    centerX = Width - BARCODE_HEIGHT_PIXEL;
+    centerY = (Height>>1) - (bitmapHeight>>1);
+
+    if (EFI_SUCCESS != (Status = GraphicsOutputProtocol->Blt(
+                                                    GraphicsOutputProtocol,
+                                                    (EFI_GRAPHICS_OUTPUT_BLT_PIXEL*)pBitmapImage,
+                                                    EfiBltBufferToVideo,
+                                                    0, 0,
+                                                    centerX, centerY,
+                                                    BARCODE_HEIGHT_PIXEL,
+                                                    bitmapHeight,
+                                                    0)))
+    {
+        DEBUG((EFI_D_ERROR, "DisplayBltOperationTest: Blt(EfiBltBufferToVideo) failed.\n"));
+      goto Exit;
+    }
+
+Exit:
+    if (pBitmapImage) {
+        FreePool(pBitmapImage);
+        pBitmapImage = NULL;
+    }
+    return Status;
+}
+// ASUS_BSP ---
+
+EFI_STATUS DrawAndroidLogo()
+{
+    EFI_STATUS     Status = EFI_SUCCESS;
+    void           *pBitmapImage = NULL;
+    UINT32         Height = GetResolutionHeight();
+    UINT32         Width = GetResolutionWidth();
+    UINTN          centerX, centerY;
+    UINT32         bitmapSize = SPLASH_ANDROID_IMAGE_WIDTH * PIXEL_SIZE * SPLASH_ANDROID_IMAGE_HEIGHT;
+
+    if (!Width || !Height) {
+      DEBUG ((EFI_D_ERROR, "Failed to get width or height\n"));
+      return EFI_UNSUPPORTED;
+    }
+
+    pBitmapImage = AllocateZeroPool(bitmapSize);
+
+    if (pBitmapImage == NULL) {
+        DEBUG((EFI_D_ERROR, "DrawAndroidLogo: AllocateZeroPool failed\n"));
+        goto Exit;
+    } else {
+        UINT32  *pData     = (UINT32*)pBitmapImage;
+        UINT32  x;
+        UINT32  tmpRed, tmpBlue;
+        UINT32  finalRed;
+        gST->ConOut->ClearScreen (gST->ConOut);
+
+        for (x = 0; x < (SPLASH_ANDROID_IMAGE_HEIGHT*SPLASH_ANDROID_IMAGE_WIDTH); x++) {
+            tmpRed  = ((AndroidLogo[x] & 0xFF) << 16);
+            tmpBlue = (AndroidLogo[x] >> 16);
+            finalRed  = (tmpRed | (AndroidLogo[x] & 0x00FFFF));
+            AndroidLogo[x] = (tmpBlue | (finalRed & 0xFFFF00));
+            *pData++ = (AndroidLogo[x] | 0xFF000000);
+        }
+    }
+
+    /* Set image position */
+    centerX = (Width>>1) - (SPLASH_ANDROID_IMAGE_HEIGHT>>1);
+    centerY = 1068;
+
+    if (EFI_SUCCESS != (Status = GraphicsOutputProtocol->Blt(
+                                GraphicsOutputProtocol,
+                                (EFI_GRAPHICS_OUTPUT_BLT_PIXEL*)pBitmapImage,
+                                EfiBltBufferToVideo,
+                                0, 0,
+                                centerX, centerY,
+                                SPLASH_ANDROID_IMAGE_HEIGHT, //X position
+                                SPLASH_ANDROID_IMAGE_WIDTH, //Y position
+                                0)))
+    {
+      DEBUG((EFI_D_ERROR, "DisplayBltOperationTest: Blt(EfiBltBufferToVideo) failed.\n"));
+      goto Exit;
+    }
+
+Exit:
+    if (pBitmapImage) {
+        FreePool(pBitmapImage);
+        pBitmapImage = NULL;
+    }
+
+    return Status;
+}
+#endif
+
+//ASUS BSP Display +++
+#if defined  ASUS_AI2205_BUILD && CN_BUILD 
+// for CN
+EFI_STATUS DrawTencentLogo()
+{
+    EFI_STATUS     Status = EFI_SUCCESS;
+    void           *pBitmapImage = NULL;
+    UINT32         Height = GetResolutionHeight();
+    UINT32         Width = GetResolutionWidth();
+    UINTN          centerX, centerY;
+    UINT32         bitmapSize = Tencent_Width * PIXEL_SIZE * Tencent_Height;
+
+    if (!Width || !Height) {
+      DEBUG ((EFI_D_ERROR, "Failed to get width or height\n"));
+      return EFI_UNSUPPORTED;
+    }
+
+    pBitmapImage = AllocateZeroPool(bitmapSize);
+
+    if (pBitmapImage == NULL) {
+        DEBUG((EFI_D_ERROR, "DrawCNLogo: AllocateZeroPool failed\n"));
+        goto Exit;
+    } else {
+        UINT32  *pData     = (UINT32*)pBitmapImage;
+        UINT32  x;
+        UINT32  tmpRed, tmpBlue;
+        UINT32  finalRed;
+        DEBUG((EFI_D_VERBOSE, "DrawTencentLogo: start fill Tencent Logo bitmap\n"));
+
+        for (x = 0; x < (Tencent_Height*Tencent_Width); x++) {
+            tmpRed  = ((Tencent[x] & 0xFF) << 16);
+            tmpBlue = (Tencent[x] >> 16);
+            finalRed  = (tmpRed | (Tencent[x] & 0x00FFFF));
+            Tencent[x] = (tmpBlue | (finalRed & 0xFFFF00));
+            *pData++ = (Tencent[x] | 0xFF000000);
+         }
+        DEBUG((EFI_D_VERBOSE, "DrawTencentLogo: fill CN Logo OK!\n"));
+    }
+
+    /* Set image position */
+    centerX = (Width>>1) - (Tencent_Height>>1);
+    centerY = 1960;
+
+    if (EFI_SUCCESS != (Status = GraphicsOutputProtocol->Blt(
+                                GraphicsOutputProtocol,
+                                (EFI_GRAPHICS_OUTPUT_BLT_PIXEL*)pBitmapImage,
+                                EfiBltBufferToVideo,
+                                0, 0,
+                                centerX, centerY,
+                                Tencent_Height, //X position
+                                Tencent_Width, //Y position
+                                0)))
+    {
+      DEBUG((EFI_D_ERROR, "DisplayBltOperationTest: Blt(EfiBltBufferToVideo) failed.\n"));
+      goto Exit;
+    }
+
+Exit:
+    if (pBitmapImage) {
+        FreePool(pBitmapImage);
+        pBitmapImage = NULL;
+    }
+
+    return Status;
+}
+
+
+EFI_STATUS DrawASUSCNLogo()
+{
+    EFI_STATUS     Status = EFI_SUCCESS;
+    void           *pBitmapImage = NULL;
+    UINT32         Height = GetResolutionHeight();
+    UINT32         Width = GetResolutionWidth();
+    UINTN          centerX, centerY;
+    UINT32         bitmapSize = AsusLogoCN_Width * PIXEL_SIZE * AsusLogoCN_Height;
+
+    if (!Width || !Height) {
+      DEBUG ((EFI_D_ERROR, "Failed to get width or height\n"));
+      return EFI_UNSUPPORTED;
+    }
+
+    pBitmapImage = AllocateZeroPool(bitmapSize);
+
+    if (pBitmapImage == NULL) {
+        DEBUG((EFI_D_ERROR, "DrawCNLogo: AllocateZeroPool failed\n"));
+        goto Exit;
+    } else {
+        UINT32  *pData     = (UINT32*)pBitmapImage;
+        UINT32  x;
+        UINT32  tmpRed, tmpBlue;
+        UINT32  finalRed;
+        DEBUG((EFI_D_VERBOSE, "DrawCNLogo: start fill CN Logo bitmap\n"));
+        gST->ConOut->ClearScreen (gST->ConOut);
+        for (x = 0; x < (AsusLogoCN_Height*AsusLogoCN_Width); x++) {
+            tmpRed  = ((AsusLogoCN[x] & 0xFF) << 16);
+            tmpBlue = (AsusLogoCN[x] >> 16);
+            finalRed  = (tmpRed | (AsusLogoCN[x] & 0x00FFFF));
+            AsusLogoCN[x] = (tmpBlue | (finalRed & 0xFFFF00));
+            *pData++ = (AsusLogoCN[x] | 0xFF000000);
+         }
+        DEBUG((EFI_D_VERBOSE, "DrawCNLogo: fill CN Logo OK!\n"));
+    }
+
+    /* Set image position */
+    centerX = (Width>>1) - (AsusLogoCN_Height>>1);
+    centerY = 1038;
+
+    if (EFI_SUCCESS != (Status = GraphicsOutputProtocol->Blt(
+                                GraphicsOutputProtocol,
+                                (EFI_GRAPHICS_OUTPUT_BLT_PIXEL*)pBitmapImage,
+                                EfiBltBufferToVideo,
+                                0, 0,
+                                centerX, centerY,
+                                AsusLogoCN_Height, //X position
+                                AsusLogoCN_Width, //Y position
+                                0)))
+    {
+      DEBUG((EFI_D_ERROR, "DisplayBltOperationTest: Blt(EfiBltBufferToVideo) failed.\n"));
+      goto Exit;
+    }
+    
+    //Don't show tencent logo when CID = DIABLO
+    if ((AsciiStrCmp ("DIABLO", cid_name)) ){
+        DrawTencentLogo();
+    }
+    
+Exit:
+    if (pBitmapImage) {
+        FreePool(pBitmapImage);
+        pBitmapImage = NULL;
+    }
+
+    return Status;
+}
+
+EFI_STATUS DrawEliteCNLogo(UINT32 EWidth, UINT32 EHeight, UINT32 EliteCN[], int pos)
+{
+    EFI_STATUS     Status = EFI_SUCCESS;
+    void           *pBitmapImage = NULL;
+    UINT32         Height = GetResolutionHeight();
+    UINT32         Width = GetResolutionWidth();
+    UINTN          centerX, centerY;
+    UINT32         bitmapSize = EWidth * PIXEL_SIZE * EHeight;
+
+    if (!Width || !Height) {
+      DEBUG ((EFI_D_ERROR, "Failed to get width or height\n"));
+      return EFI_UNSUPPORTED;
+    }
+
+    pBitmapImage = AllocateZeroPool(bitmapSize);
+
+    if (pBitmapImage == NULL) {
+        DEBUG((EFI_D_ERROR, "DrawCNLogo: AllocateZeroPool failed\n"));
+        goto Exit;
+    } else {
+        UINT32  *pData     = (UINT32*)pBitmapImage;
+        UINT32  x;
+        UINT32  tmpRed, tmpBlue;
+        UINT32  finalRed;
+        DEBUG((EFI_D_VERBOSE, "DrawEliteCNLogo: start fill EliteCN_Top Logo bitmap\n"));
+        //clear display
+        gST->ConOut->ClearScreen (gST->ConOut);
+        for (x = 0; x < (EHeight*EWidth); x++) {
+            tmpRed  = ((EliteCN[x] & 0xFF) << 16);
+            tmpBlue = (EliteCN[x] >> 16);
+            finalRed  = (tmpRed | (EliteCN[x] & 0x00FFFF));
+            EliteCN[x] = (tmpBlue | (finalRed & 0xFFFF00));
+            *pData++ = (EliteCN[x] | 0xFF000000);
+         }
+        DEBUG((EFI_D_VERBOSE, "DrawEliteCNLogo: fill EliteCN_Top Logo OK!\n"));
+    }
+
+    /* Set image position */
+    centerX = (Width>>1) - (EHeight>>1);
+    centerY = pos;
+
+    if (EFI_SUCCESS != (Status = GraphicsOutputProtocol->Blt(
+                                GraphicsOutputProtocol,
+                                (EFI_GRAPHICS_OUTPUT_BLT_PIXEL*)pBitmapImage,
+                                EfiBltBufferToVideo,
+                                0, 0,
+                                centerX, centerY,
+                                EHeight, //X position
+                                EWidth, //Y position
+                                0)))
+    {
+      DEBUG((EFI_D_ERROR, "DisplayBltOperationTest: Blt(EfiBltBufferToVideo) failed.\n"));
+      goto Exit;
+    }
+
+Exit:
+    if (pBitmapImage) {
+        FreePool(pBitmapImage);
+        pBitmapImage = NULL;
+    }
+
+    return Status;
+}
+
+EFI_STATUS DrawAndroidCNLogo()
+{
+    EFI_STATUS     Status = EFI_SUCCESS;
+    void           *pBitmapImage = NULL;
+    UINT32         Height = GetResolutionHeight();
+    UINT32         Width = GetResolutionWidth();
+    UINTN          centerX, centerY;
+    UINT32         bitmapSize = AndroidCN_Width * PIXEL_SIZE * AndroidCN_Height;
+
+    if (!Width || !Height) {
+      DEBUG ((EFI_D_ERROR, "Failed to get width or height\n"));
+      return EFI_UNSUPPORTED;
+    }
+
+    pBitmapImage = AllocateZeroPool(bitmapSize);
+
+    if (pBitmapImage == NULL) {
+        DEBUG((EFI_D_ERROR, "DrawCNLogo: AllocateZeroPool failed\n"));
+        goto Exit;
+    } else {
+        UINT32  *pData     = (UINT32*)pBitmapImage;
+        UINT32  x;
+        UINT32  tmpRed, tmpBlue;
+        UINT32  finalRed;
+        DEBUG((EFI_D_VERBOSE, "DrawAndroidCNLogo: start fill AndroidCN Logo bitmap\n"));
+        gST->ConOut->ClearScreen (gST->ConOut);
+        for (x = 0; x < (AndroidCN_Height*AndroidCN_Width); x++) {
+            tmpRed  = ((AndroidCN[x] & 0xFF) << 16);
+            tmpBlue = (AndroidCN[x] >> 16);
+            finalRed  = (tmpRed | (AndroidCN[x] & 0x00FFFF));
+            AndroidCN[x] = (tmpBlue | (finalRed & 0xFFFF00));
+            *pData++ = (AndroidCN[x] | 0xFF000000);
+         }
+        DEBUG((EFI_D_VERBOSE, "DrawAndroidCNLogo: fill AndroidCN Logo OK!\n"));
+    }
+
+    /* Set image position */
+    centerX = (Width>>1) - (AndroidCN_Height>>1);
+    centerY = 2104;
+
+    if (EFI_SUCCESS != (Status = GraphicsOutputProtocol->Blt(
+                                GraphicsOutputProtocol,
+                                (EFI_GRAPHICS_OUTPUT_BLT_PIXEL*)pBitmapImage,
+                                EfiBltBufferToVideo,
+                                0, 0,
+                                centerX, centerY,
+                                AndroidCN_Height, //X position
+                                AndroidCN_Width, //Y position
+                                0)))
+    {
+      DEBUG((EFI_D_ERROR, "DisplayBltOperationTest: Blt(EfiBltBufferToVideo) failed.\n"));
+      goto Exit;
+    }
+
+  //DrawEliteCNLogo(EliteCN_Bot_Width,EliteCN_Bot_Height,EliteCN_Bot, 1171);
+  DrawEliteCNLogo(EliteCN_Top_Width,EliteCN_Top_Height,EliteCN_Top, 899);
+
+Exit:
+    if (pBitmapImage) {
+        FreePool(pBitmapImage);
+        pBitmapImage = NULL;
+    }
+
+    return Status;
+}
+void DrawLogo() {
+
+  DrawASUSCNLogo();
+
+}
+void DrawAndroid() {
+  DrawAndroidLogo();
+  MicroSecondDelay(500000);
+  DrawEliteCNLogo(EliteCN_Top_Width,EliteCN_Top_Height,EliteCN_Top, 899);
+}
+
+#endif
+
+#if defined  ASUS_AI2205_BUILD && !CN_BUILD
+EFI_STATUS DrawEliteLogo()
+{
+    EFI_STATUS     Status = EFI_SUCCESS;
+    void           *pBitmapImage = NULL;
+    UINT32         Height = GetResolutionHeight();
+    UINT32         Width = GetResolutionWidth();
+    UINTN          centerX, centerY;
+    UINT32         bitmapSize = SPLASH_ELITE_IMAGE_WIDTH * PIXEL_SIZE * SPLASH_ELITE_IMAGE_HEIGHT;
+
+    if (!Width || !Height) {
+      DEBUG ((EFI_D_ERROR, "Failed to get width or height\n"));
+      return EFI_UNSUPPORTED;
+    }
+
+    pBitmapImage = AllocateZeroPool(bitmapSize);
+
+    if (pBitmapImage == NULL) {
+        DEBUG((EFI_D_ERROR, "DrawEliteLogo: AllocateZeroPool failed\n"));
+        goto Exit;
+    } else {
+        UINT32  *pData     = (UINT32*)pBitmapImage;
+        UINT32  x;
+        UINT32  tmpRed, tmpBlue;
+        UINT32  finalRed;
+        DEBUG((EFI_D_VERBOSE, "DrawEliteLogo: start fill Elite Logo bitmap\n"));
+
+        for (x = 0; x < (SPLASH_ELITE_IMAGE_HEIGHT*SPLASH_ELITE_IMAGE_WIDTH); x++) {
+            tmpRed  = ((EliteLogo[x] & 0xFF) << 16);
+            tmpBlue = (EliteLogo[x] >> 16);
+            finalRed  = (tmpRed | (EliteLogo[x] & 0x00FFFF));
+            EliteLogo[x] = (tmpBlue | (finalRed & 0xFFFF00));
+            *pData++ = (EliteLogo[x] | 0xFF000000);
+         }
+        DEBUG((EFI_D_VERBOSE, "DrawEliteLogo: fill Elite Logo OK!\n"));
+    }
+
+    /* Set image position */
+    centerX = (Width>>1) - (SPLASH_ELITE_IMAGE_HEIGHT>>1);
+    centerY = 2165;
+
+    if (EFI_SUCCESS != (Status = GraphicsOutputProtocol->Blt(
+                                GraphicsOutputProtocol,
+                                (EFI_GRAPHICS_OUTPUT_BLT_PIXEL*)pBitmapImage,
+                                EfiBltBufferToVideo,
+                                0, 0,
+                                centerX, centerY,
+                                SPLASH_ELITE_IMAGE_HEIGHT, //X position
+                                SPLASH_ELITE_IMAGE_WIDTH, //Y position
+                                0)))
+    {
+      DEBUG((EFI_D_ERROR, "DisplayBltOperationTest: Blt(EfiBltBufferToVideo) failed.\n"));
+      goto Exit;
+    }
+
+Exit:
+    if (pBitmapImage) {
+        FreePool(pBitmapImage);
+        pBitmapImage = NULL;
+    }
+
+    return Status;
+}
+
+EFI_STATUS DrawAsusLogo()
+{
+    EFI_STATUS     Status = EFI_SUCCESS;
+    void           *pBitmapImage = NULL;
+    UINT32         Height = GetResolutionHeight();
+    UINT32         Width = GetResolutionWidth();
+    UINTN          centerX, centerY;
+    UINT32         bitmapSize = SPLASH_IMAGE_WIDTH * PIXEL_SIZE * SPLASH_IMAGE_HEIGHT;
+
+    if (!Width || !Height) {
+      DEBUG ((EFI_D_ERROR, "Failed to get width or height\n"));
+      return EFI_UNSUPPORTED;
+    }
+
+    pBitmapImage = AllocateZeroPool(bitmapSize);
+
+    if (pBitmapImage == NULL) {
+        DEBUG((EFI_D_ERROR, "DrawAsusLogo: AllocateZeroPool failed\n"));
+        goto Exit;
+    } else {
+        UINT32  *pData     = (UINT32*)pBitmapImage;
+        UINT32  x;
+        UINT32  tmpRed, tmpBlue;
+        UINT32  finalRed;
+        gST->ConOut->ClearScreen (gST->ConOut);
+        DEBUG((EFI_D_VERBOSE, "DrawAsusLogo: start fill Asus Logo bitmap\n"));
+
+        for (x = 0; x < (SPLASH_IMAGE_HEIGHT*SPLASH_IMAGE_WIDTH); x++) {
+            tmpRed  = ((AsusLogo[x] & 0xFF) << 16);
+            tmpBlue = (AsusLogo[x] >> 16);
+            finalRed  = (tmpRed | (AsusLogo[x] & 0x00FFFF));
+            AsusLogo[x] = (tmpBlue | (finalRed & 0xFFFF00));
+            *pData++ = (AsusLogo[x] | 0xFF000000);
+        }
+
+        DEBUG((EFI_D_VERBOSE, "DrawAsusLogo: fill Asus Logo OK!\n"));
+    }
+
+    /* Set image position */
+    centerX = (Width>>1) - (SPLASH_IMAGE_HEIGHT>>1);
+    centerY = 1028;
+
+    if (EFI_SUCCESS != (Status = GraphicsOutputProtocol->Blt(
+                                GraphicsOutputProtocol,
+                                (EFI_GRAPHICS_OUTPUT_BLT_PIXEL*)pBitmapImage,
+                                EfiBltBufferToVideo,
+                                0, 0,
+                                centerX, centerY,
+                                SPLASH_IMAGE_HEIGHT, //X position
+                                SPLASH_IMAGE_WIDTH, //Y position
+                                0)))
+    {
+      DEBUG((EFI_D_ERROR, "DisplayBltOperationTest: Blt(EfiBltBufferToVideo) failed.\n"));
+      goto Exit;
+    }
+    DrawEliteLogo();
+Exit:
+    if (pBitmapImage) {
+        FreePool(pBitmapImage);
+        pBitmapImage = NULL;
+    }
+
+    return Status;
+}
+
+void DrawLogo() {
+
+  DrawAsusLogo();
+
+}
+void DrawAndroid() {
+
+  DrawAndroidLogo();
+
+}
+#endif
+#if defined  ASUS_AI2205_BUILD
+EFI_STATUS DrawAsusLogo_Charger()
+{
+    EFI_STATUS     Status = EFI_SUCCESS;
+    void           *pBitmapImage = NULL;
+    UINT32         Height = GetResolutionHeight();
+    UINT32         Width = GetResolutionWidth();
+    UINTN          centerX;
+    UINTN          centerY;
+    UINT32         bitmapHeight = SPLASH_IMAGE_WIDTH_CHARGER;
+    UINT32         bitmapSize = SPLASH_IMAGE_WIDTH_CHARGER* PIXEL_SIZE * SPLASH_IMAGE_HEIGHT_CHARGER;
+
+    pBitmapImage = AllocateZeroPool(bitmapSize);
+
+    if (pBitmapImage == NULL) {
+        DEBUG((EFI_D_ERROR, "DrawAsusLogo: AllocateZeroPool failed\n"));
+        goto Exit;
+    } else {
+
+        UINT32  *pData     = (UINT32*)pBitmapImage;
+        UINT32  x;
+        gST->ConOut->ClearScreen (gST->ConOut);
+        DEBUG((EFI_D_VERBOSE, "DrawAsusLogo: start fill Asus Logo bitmap\n"));
+
+        for (x = 0; x < (SPLASH_IMAGE_HEIGHT_CHARGER*bitmapHeight); x++)
+            *pData++ = (AsusLogo_charger[x] | 0xFF000000);
+
+        DEBUG((EFI_D_VERBOSE, "DrawAsusLogo: fill Asus Logo OK!\n"));
+    }
+
+    /* Set image position */
+    centerX = (Width>>1) - (SPLASH_IMAGE_HEIGHT_CHARGER>>1);
+    centerY = (Height>>1) - (bitmapHeight>>1);
+
+    if (EFI_SUCCESS != (Status = GraphicsOutputProtocol->Blt(
+                                GraphicsOutputProtocol,
+                                (EFI_GRAPHICS_OUTPUT_BLT_PIXEL*)pBitmapImage,
+                                EfiBltBufferToVideo,
+                                0, 0,
+                                centerX, centerY,
+                                SPLASH_IMAGE_HEIGHT_CHARGER, //X position
+                                SPLASH_IMAGE_WIDTH_CHARGER, //Y position
+                                0)))
+    {
+      DEBUG((EFI_D_ERROR, "DisplayBltOperationTest: Blt(EfiBltBufferToVideo) failed.\n"));
+      goto Exit;
+    }
+
+Exit:
+    if (pBitmapImage) {
+        FreePool(pBitmapImage);
+        pBitmapImage = NULL;
+    }
+
+    return Status;
+}
+#endif
+//ASUS BSP Display  ---
 
 /**
   Update the background color of the message

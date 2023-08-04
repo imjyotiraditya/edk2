@@ -24,43 +24,43 @@
  * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
  * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
  * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+ */
 
-/* Changes from Qualcomm Innovation Center are provided under the following
- * license:
+ /*
+ * Changes from Qualcomm Innovation Center are provided under the following license:
  *
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted (subject to the limitations in the
- * disclaimer below) provided that the following conditions are met:
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted (subject to the limitations in the
+ *  disclaimer below) provided that the following conditions are met:
  *
- *    * Redistributions of source code must retain the above copyright
- *      notice, this list of conditions and the following disclaimer.
+ *      * Redistributions of source code must retain the above copyright
+ *        notice, this list of conditions and the following disclaimer.
  *
- *    * Redistributions in binary form must reproduce the above
- *      copyright notice, this list of conditions and the following
- *      disclaimer in the documentation and/or other materials provided
- *      with the distribution.
+ *      * Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and/or other materials provided
+ *        with the distribution.
  *
- *    * Neither the name of Qualcomm Innovation Center, Inc. nor the names of
- *      its contributors may be used to endorse or promote products derived
- *      from this software without specific prior written permission.
+ *      * Neither the name of Qualcomm Innovation Center, Inc. nor the names of its
+ *        contributors may be used to endorse or promote products derived
+ *        from this software without specific prior written permission.
  *
- * NO EXPRESS OR IMPLIED LICENSES TO ANY PARTY'S PATENT RIGHTS ARE
- * GRANTED BY THIS LICENSE. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT
- * HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED
- * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
- * IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
- * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
- * GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
- * IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
- * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+ *  NO EXPRESS OR IMPLIED LICENSES TO ANY PARTY'S PATENT RIGHTS ARE
+ *  GRANTED BY THIS LICENSE. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT
+ *  HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED
+ *   WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+ *  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ *  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ *  ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ *  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+ *  GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ *  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+ *  IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+ *  OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
+ *  IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
 
 #include "VerifiedBoot.h"
 #include "BootLinux.h"
@@ -71,6 +71,21 @@
 #include <Library/MenuKeysDetection.h>
 #include <Library/VerifiedBootMenu.h>
 #include <Library/LEOEMCertificate.h>
+#ifdef ASUS_BUILD
+#include <Library/FastbootMenu.h>
+#include <Library/DeviceInfo.h>
+#include "abl.h"
+
+extern BOOLEAN CheckAsusVerifiedState;
+extern BOOLEAN CheckAsusVerifiedStateMenu;
+BOOLEAN AsusVbmetaVerified = FALSE;
+BOOLEAN AsusBootVerified = FALSE;
+BOOLEAN AsusDtboVerified = FALSE;
+BOOLEAN AsusVendorBootVerified = FALSE;
+BOOLEAN AsusInitBootVerified = FALSE;
+
+STATIC CONST CHAR8 *AsusVerifiedState = " androidboot.asusverifiedstate=";
+#endif
 
 STATIC CONST CHAR8 *VerityMode = " androidboot.veritymode=";
 STATIC CONST CHAR8 *VerifiedState = " androidboot.verifiedbootstate=";
@@ -78,21 +93,20 @@ STATIC CONST CHAR8 *KeymasterLoadState = " androidboot.keymaster=1";
 STATIC CONST CHAR8 *DmVerityCmd = " root=/dev/dm-0 dm=\"system none ro,0 1 "
                                     "android-verity";
 STATIC CONST CHAR8 *Space = " ";
+extern UINT64 FlashlessBootImageAddr;
 
 STATIC BOOLEAN KeymasterEnabled = TRUE;
 
 #define MAX_NUM_REQ_PARTITION    8
 #define MAX_PROPERTY_SIZE        10
 
-#define DUMMY_PUBLIC_KEY_MOD_LEN 256
-#define DUMMY_PUBLIC_KEY_EXP_LEN 1
-
 static CHAR8 *avb_verify_partition_name[] = {
      "boot",
      "dtbo",
      "vbmeta",
      "recovery",
-     "vendor_boot"
+     "vendor_boot",
+     "init_boot"
 };
 
 STATIC struct verified_boot_verity_mode VbVm[] = {
@@ -122,18 +136,46 @@ typedef struct {
   AvbSlotVerifyData *SlotData;
 } VB2Data;
 
+#if VERIFIED_BOOT_ENABLED
+BOOLEAN Is_VERIFIED_BOOT_2 (VOID)
+{
+  UINT32 PtnCount;
+  INT32 PtnIdx;
+  INT32 PtnIdx_a;
+  GetPartitionCount (&PtnCount);
+  PtnIdx_a = GetPartitionIndex ((CHAR16 *)L"vbmeta_a");
+
+  if (PtnIdx_a < PtnCount &&
+      PtnIdx_a != INVALID_PTN) {
+      return TRUE;
+  } else {
+      PtnIdx = GetPartitionIndex ((CHAR16 *)L"vbmeta");
+      if (PtnIdx < PtnCount &&
+      PtnIdx != INVALID_PTN) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+#else
+BOOLEAN Is_VERIFIED_BOOT_2 (VOID)
+{
+  return FALSE;
+}
+#endif
+
 UINT32
 GetAVBVersion ()
 {
+  if (Is_VERIFIED_BOOT_2 ()) {
+    return AVB_2;
+  } else {
 #if VERIFIED_BOOT_LE
   return AVB_LE;
-#elif VERIFIED_BOOT_2
-  return AVB_2;
-#elif VERIFIED_BOOT
-  return AVB_1;
 #else
   return NO_AVB;
 #endif
+  }
 }
 
 BOOLEAN
@@ -164,6 +206,10 @@ AppendVBCommonCmdLine (BootInfo *Info)
   if (Info->VbIntf->Revision >= QCOM_VERIFIEDBOOT_PROTOCOL_REVISION) {
     GUARD (AppendVBCmdLine (Info, VerifiedState));
     GUARD (AppendVBCmdLine (Info, VbSn[Info->BootState].name));
+#ifdef ASUS_BUILD
+    GUARD (AppendVBCmdLine (Info, AsusVerifiedState));
+    GUARD (AppendVBCmdLine (Info, Info->AsusVerifiedState? "PASS" : "FAIL"));
+#endif
   }
   GUARD (AppendVBCmdLine (Info, KeymasterLoadState));
   GUARD (AppendVBCmdLine (Info, Space));
@@ -321,6 +367,33 @@ IsRootCmdLineUpdated (BootInfo *Info)
   }
 }
 
+STATIC EFI_STATUS
+LocateImageNoAuth (BootInfo *Info, UINT32 *PageSize)
+{
+  EFI_STATUS Status = EFI_SUCCESS;
+  UINT32 ImageHdrSize = BOOT_IMG_MAX_PAGE_SIZE;
+
+  Info->Images[0].ImageBuffer = (VOID *)FlashlessBootImageAddr;
+  Status = CheckImageHeader (Info->Images[0].ImageBuffer, ImageHdrSize,
+                             NULL, 0, (UINT32 *)&(Info->Images[0].ImageSize),
+                             PageSize, FALSE, NULL);
+  if (Status != EFI_SUCCESS) {
+    DEBUG ((EFI_D_ERROR, "Unable to locate image in memory\n"));
+    return Status;
+  }
+
+  Info->NumLoadedImages = 1;
+  Info->Images[0].Name = AllocateZeroPool (StrLen (Info->Pname) + 1);
+  if (!Info->Images[0].Name) {
+    DEBUG ((EFI_D_ERROR, "Out of memory for image name\n"));
+    return EFI_OUT_OF_RESOURCES;
+  }
+
+  /* Flow ahead searches for Images.Name to find "boot" so we make it as "boot"
+   * as if we loaded from the boot partition */
+  UnicodeStrToAsciiStr (Info->Pname, Info->Images[0].Name);
+  return Status;
+}
 
 /**
   Load Partition Boot image if the boot image is v3
@@ -388,6 +461,27 @@ LoadPartitionImageHeader (BootInfo *Info, CHAR16 *PartName,
 }
 
 STATIC EFI_STATUS
+LoadBootImageHeader (BootInfo *Info,
+                          VOID **BootImageHdrBuffer,
+                          UINT32 *BootImageHdrSize)
+{
+  EFI_STATUS Status = EFI_SUCCESS;
+  CHAR16 Pname[MAX_GPT_NAME_SIZE] = {0};
+
+  StrnCpyS (Pname, ARRAY_SIZE (Pname),
+            (CHAR16 *)L"boot", StrLen ((CHAR16 *)L"boot"));
+
+  if (Info->MultiSlotBoot) {
+    GUARD (StrnCatS (Pname, ARRAY_SIZE (Pname),
+                     GetCurrentSlotSuffix ().Suffix,
+                     StrLen (GetCurrentSlotSuffix ().Suffix)));
+  }
+
+  return LoadImageHeader (Pname, BootImageHdrBuffer, BootImageHdrSize);
+}
+
+
+STATIC EFI_STATUS
 LoadBootImageNoAuth (BootInfo *Info, UINT32 *PageSize, BOOLEAN *FastbootPath)
 {
   EFI_STATUS Status = EFI_SUCCESS;
@@ -400,6 +494,15 @@ LoadBootImageNoAuth (BootInfo *Info, UINT32 *PageSize, BOOLEAN *FastbootPath)
   VOID *RecoveryImageHdrBuffer = NULL;
   UINT32 RecoveryImageHdrSize = 0;
   BOOLEAN BootImageLoaded;
+  /* In case of flashless LE devices images are already loaded and verified
+   * by previous bootloaders, so just fill the BootInfo structure with
+   * required parameters
+   */
+  if (Info->FlashlessBoot) {
+    GUARD (LocateImageNoAuth (Info, PageSize));
+    goto SkipImageVerification;
+  }
+
 
   /** The Images[0].ImageBuffer would have been loaded with the boot image
    *  already if we are coming from fastboot boot path. Ignore loading it
@@ -485,6 +588,7 @@ LoadBootImageNoAuth (BootInfo *Info, UINT32 *PageSize, BOOLEAN *FastbootPath)
 
   Info->Images[0].ImageSize = ImageSizeActual;
 
+SkipImageVerification:
   if (Info->HeaderVersion >= BOOT_HEADER_VERSION_THREE) {
     Status = NoAVBLoadPartitionImage (Info, (CHAR16 *)L"vendor_boot");
     if (Status != EFI_SUCCESS) {
@@ -502,6 +606,14 @@ LoadBootImageNoAuth (BootInfo *Info, UINT32 *PageSize, BOOLEAN *FastbootPath)
                 "ERROR: Failed to load recovery Image: %r\n", Status));
         goto ErrRecImgName;
       }
+    }
+  }
+
+  if (Info->HasBootInitRamdisk) {
+    Status = NoAVBLoadPartitionImage (Info, (CHAR16 *)L"init_boot");
+    if (Status != EFI_SUCCESS) {
+        DEBUG ((EFI_D_ERROR,
+               "ERROR: Failed to load init boot Image : %r\n", Status));
     }
   }
 
@@ -638,7 +750,12 @@ LoadImageNoAuthWrapper (BootInfo *Info)
 
    if (!IsDynamicPartitionSupport () &&
         !IsRootCmdLineUpdated (Info)) {
-    SystemPathLen = GetSystemPath (&SystemPath, Info);
+    SystemPathLen = GetSystemPath (&SystemPath,
+                                   Info->MultiSlotBoot,
+                                   Info->BootIntoRecovery,
+                                   (CHAR16 *)L"system",
+                                   (CHAR8 *)"root",
+                                   Info->FlashlessBoot);
     if (SystemPathLen == 0 || SystemPath == NULL) {
       DEBUG ((EFI_D_ERROR, "GetSystemPath failed!\n"));
       return EFI_LOAD_ERROR;
@@ -701,7 +818,12 @@ LoadImageAndAuthVB1 (BootInfo *Info)
   }
 
   if (!IsRootCmdLineUpdated (Info)) {
-    SystemPathLen = GetSystemPath (&SystemPath, Info);
+    SystemPathLen = GetSystemPath (&SystemPath,
+                                   Info->MultiSlotBoot,
+                                   Info->BootIntoRecovery,
+                                   (CHAR16 *)L"system",
+                                   (CHAR8 *)"root",
+                                   Info->FlashlessBoot);
     if (SystemPathLen == 0 || SystemPath == NULL) {
       DEBUG ((EFI_D_ERROR, "GetSystemPath failed!\n"));
       return EFI_LOAD_ERROR;
@@ -1056,42 +1178,163 @@ ComputeVbMetaDigest (AvbSlotVerifyData* SlotData, CHAR8* Digest) {
   avb_memcpy (Digest, avb_sha256_final(&Ctx), AVB_SHA256_DIGEST_SIZE);
 }
 
-static UINT32 ParseBootSecurityLevel (CONST CHAR8 *BootSecurityLevel,
-                                      size_t BootSecurityLevelSize)
-{
-  UINT32 PatchLevelDate = 0;
-  UINT32 PatchLevelMonth = 0;
-  UINT32 PatchLevelYear = 0;
-  UINT32 SeparatorCount = 0;
-  UINT32 Count = 0;
 
-  /*Parse the value of security patch as per YYYY-MM-DD format*/
-  while (Count < BootSecurityLevelSize) {
-    if (BootSecurityLevel[Count] == '-') {
-      SeparatorCount++;
+static UINT32 ParseFooterOsVersion (CONST CHAR8 *Ptr, UINTN Size)
+{
+  UINT32 Major = 0;
+  UINT32 Minor = 0;
+  UINT32 SubMinor = 0;
+  UINT32 Separator = 0;
+  UINTN Index = 0;
+
+  while (Index < Size) {
+    if (Ptr[Index] == '.') {
+      Separator++;
     }
-    else if (SeparatorCount == 2) {
-      PatchLevelDate *= 10;
-      PatchLevelDate += (BootSecurityLevel[Count] - '0');
+    else if (Separator == 0) {
+      Major *= 10;
+      Major += Ptr[Index] - '0';
     }
-    else if (SeparatorCount == 1) {
-      PatchLevelMonth *= 10;
-      PatchLevelMonth += (BootSecurityLevel[Count] - '0');
+    else if (Separator == 1) {
+      Minor *= 10;
+      Minor += Ptr[Index] - '0';
     }
-    else if (SeparatorCount == 0) {
-      PatchLevelYear *= 10;
-      PatchLevelYear += (BootSecurityLevel[Count] - '0');
+    else if (Separator == 2) {
+      SubMinor *= 10;
+      SubMinor += Ptr[Index] - '0';
     }
     else {
-      return -1;
+      return 0;
     }
-    Count++;
+
+    Index++;
   }
 
-  PatchLevelDate = PatchLevelDate << 11;
-  PatchLevelYear = (PatchLevelYear - 2000) << 4;
-  return (PatchLevelDate | PatchLevelYear | PatchLevelMonth);
+  return ((Major << 14) | (Minor << 7) | SubMinor);
 }
+
+
+static UINT32 ParseFooterSecPatch (CONST CHAR8 *Ptr, UINTN Size)
+{
+  UINT32 Year = 0;
+  UINT32 Month = 0;
+  UINT32 Day = 0;
+  UINT32 Separator = 0;
+  UINTN Index = 0;
+
+  while (Index < Size) {
+    if (Ptr[Index] == '-') {
+      Separator++;
+    }
+    else if (Separator == 0) {
+      Year *= 10;
+      Year += Ptr[Index] - '0';
+    }
+    else if (Separator == 1) {
+      Month *= 10;
+      Month += Ptr[Index] - '0';
+    }
+    else if (Separator == 2) {
+      Day *= 10;
+      Day += Ptr[Index] - '0';
+    }
+    else {
+      return 0;
+    }
+
+    Index++;
+  }
+
+  if (Year == 0 ||
+    Year < 2000 ||
+    Month == 0 ||
+    Month > 12 ||
+    Day == 0 ||
+    Day > 31) {
+    return 0;
+  }
+
+  return ((Day << 11) | ((Year - 2000) << 4) | Month);
+}
+
+
+static EFI_STATUS GetOsVerAndSecPactchLevel (AvbSlotVerifyData *SlotData,
+                                             boot_img_hdr *BootImgHdr,
+                                             UINT32 *OsVersion,
+                                             UINT32 *SecPatch)
+{
+  CONST CHAR8 *PropValPtr  = NULL;
+  UINTN PropValSize = 0;
+  UINT32 OsVersionRaw;
+
+  PropValPtr = avb_property_lookup (SlotData->vbmeta_images[0].vbmeta_data,
+                                    SlotData->vbmeta_images[0].vbmeta_size,
+                                    "com.android.build.boot.os_version",
+                                    0,
+                                    &PropValSize);
+  if (PropValPtr != NULL) {
+    *OsVersion = ParseFooterOsVersion (PropValPtr, PropValSize);
+    if (*OsVersion == 0) {
+      DEBUG ((EFI_D_ERROR, "Footer os_version format invalid\n"));
+      return EFI_INVALID_PARAMETER;
+    }
+  }
+  else {
+    DEBUG ((EFI_D_ERROR, "Footer osP_version prop not found \n"));
+    goto Try_Header;
+  }
+
+  PropValPtr = NULL;
+  PropValPtr = avb_property_lookup (SlotData->vbmeta_images[0].vbmeta_data,
+                                    SlotData->vbmeta_images[0].vbmeta_size,
+                                    "com.android.build.boot.security_patch",
+                                    0,
+                                    &PropValSize);
+  if (PropValPtr != NULL) {
+    *SecPatch = ParseFooterSecPatch (PropValPtr, PropValSize);
+    if (*SecPatch == 0) {
+      DEBUG ((EFI_D_ERROR, "Footer security_patch format invalid\n"));
+      return EFI_INVALID_PARAMETER;
+    }
+  }
+  else {
+    DEBUG ((EFI_D_ERROR, "Footer SecPatch prop not found \n"));
+    goto Try_Header;
+  }
+
+  DEBUG ((EFI_D_INFO, "Ftr OsVer:0x%x SPL:0x%x\n", *OsVersion, *SecPatch));
+  return EFI_SUCCESS;
+
+Try_Header:
+
+  if (BootImgHdr->header_version >= BOOT_HEADER_VERSION_THREE) {
+    OsVersionRaw = ((boot_img_hdr_v3 *)BootImgHdr)->os_version;
+  }
+  else {
+    OsVersionRaw = ((boot_img_hdr *)BootImgHdr)->os_version;
+  }
+
+  if (OsVersionRaw == 0) {
+    DEBUG ((EFI_D_ERROR, "Boot image header OS version == 0 \n"));
+    return EFI_INVALID_PARAMETER;
+  }
+
+  *OsVersion = (OsVersionRaw >> 11) & 0x1FFFFF;
+  if (*OsVersion == 0) {
+    DEBUG ((EFI_D_ERROR, "Header Os Version format invalid\n"));
+    return EFI_INVALID_PARAMETER;
+  }
+
+  *SecPatch = OsVersionRaw & 0x7FF;
+  if (*SecPatch == 0) {
+    DEBUG ((EFI_D_ERROR, "Header security patch format invalid\n"));
+    return EFI_INVALID_PARAMETER;
+  }
+
+  DEBUG ((EFI_D_INFO, "Hdr OsVer:0x%x SPL:0x%x\n", *OsVersion, *SecPatch));
+  return EFI_SUCCESS;
+}
+
 
 STATIC BOOLEAN
 IsValidPartition (Slot *Slot, CONST CHAR16 *Name)
@@ -1115,8 +1358,10 @@ IsValidPartition (Slot *Slot, CONST CHAR16 *Name)
           FALSE : TRUE;
 }
 
+
 STATIC EFI_STATUS
-LoadImageAndAuthVB2 (BootInfo *Info)
+LoadImageAndAuthVB2 (BootInfo *Info, BOOLEAN HibernationResume,
+                        BOOLEAN SetRotAndBootState)
 {
   EFI_STATUS Status = EFI_SUCCESS;
   AvbSlotVerifyResult Result;
@@ -1126,7 +1371,11 @@ LoadImageAndAuthVB2 (BootInfo *Info)
   AvbOps *Ops = NULL;
   CHAR8 PnameAscii[MAX_GPT_NAME_SIZE] = {0};
   CHAR8 *SlotSuffix = NULL;
+#ifdef ASUS_BUILD
+  BOOLEAN AllowVerificationError = (IsUnlocked () || IsAuthorized());
+#else
   BOOLEAN AllowVerificationError = IsUnlocked ();
+#endif
   CHAR8 *RequestedPartitionAll[MAX_NUM_REQ_PARTITION] = {NULL};
   CHAR8 **RequestedPartition = NULL;
   UINTN NumRequestedPartition = 0;
@@ -1140,22 +1389,21 @@ LoadImageAndAuthVB2 (BootInfo *Info)
   VOID *RecoveryImageBuffer = NULL;
   UINTN RecoveryImageSize = 0;
   KMRotAndBootState Data = {0};
-  CONST CHAR8 *BootSecurityLevel = NULL;
-  size_t BootSecurityLevelSize = 0;
-  BOOLEAN DateSupport = FALSE;
-  CONST boot_img_hdr *BootImgHdr = NULL;
+  boot_img_hdr *BootImgHdr = NULL;
   AvbSlotVerifyFlags VerifyFlags =
       AllowVerificationError ? AVB_SLOT_VERIFY_FLAGS_ALLOW_VERIFICATION_ERROR
                              : AVB_SLOT_VERIFY_FLAGS_NONE;
   AvbHashtreeErrorMode VerityFlags =
-      AVB_HASHTREE_ERROR_MODE_RESTART_AND_INVALIDATE;
+      AVB_HASHTREE_ERROR_MODE_MANAGED_RESTART_AND_EIO;
   CHAR8 Digest[AVB_SHA256_DIGEST_SIZE];
   BOOLEAN UpdateRollback = FALSE;
-  UINT32 OSVersion;
+  BOOLEAN UpdateRollbackIndex = FALSE;
 
   Info->BootState = RED;
-  GUARD (VBCommonInit (Info));
-  GUARD (VBAllocateCmdLine (Info));
+  if (!HibernationResume) {
+    GUARD (VBCommonInit (Info));
+    GUARD (VBAllocateCmdLine (Info));
+  }
 
   UserData = avb_calloc (sizeof (AvbOpsUserData));
   if (UserData == NULL) {
@@ -1203,12 +1451,9 @@ LoadImageAndAuthVB2 (BootInfo *Info)
   DEBUG ((EFI_D_VERBOSE, "Slot: %a, allow verification error: %a\n", SlotSuffix,
           BooleanString[AllowVerificationError].name));
 
-  if (FixedPcdGetBool (AllowEio)) {
-    VerityFlags = IsEnforcing () ? AVB_HASHTREE_ERROR_MODE_RESTART
-                                 : AVB_HASHTREE_ERROR_MODE_EIO;
-  } else {
-    VerityFlags = AVB_HASHTREE_ERROR_MODE_RESTART_AND_INVALIDATE;
-  }
+  if ( !IsEnforcing () )
+    VerifyFlags |= AVB_SLOT_VERIFY_FLAGS_RESTART_CAUSED_BY_HASHTREE_CORRUPTION;
+
   RequestedPartition = RequestedPartitionAll;
 
   if ( ( (!Info->MultiSlotBoot) ||
@@ -1247,6 +1492,11 @@ LoadImageAndAuthVB2 (BootInfo *Info)
         HeaderVersion >= BOOT_HEADER_VERSION_THREE) {
        AddRequestedPartition (RequestedPartitionAll, IMG_DTBO);
        NumRequestedPartition += 1;
+
+       if (!HibernationResume) {
+         AddRequestedPartition (RequestedPartitionAll, IMG_DTBO);
+         NumRequestedPartition += 1;
+       }
        if (SlotData != NULL) {
           avb_slot_verify_data_free (SlotData);
        }
@@ -1255,20 +1505,49 @@ LoadImageAndAuthVB2 (BootInfo *Info)
     }
   } else {
     Slot CurrentSlot;
+    VOID *ImageHdrBuffer = NULL;
+    UINT32 ImageHdrSize = 0;
+
+    Status = LoadBootImageHeader (Info, &ImageHdrBuffer, &ImageHdrSize);
+
+    if (Status != EFI_SUCCESS ||
+        ImageHdrBuffer ==  NULL) {
+      DEBUG ((EFI_D_ERROR, "ERROR: Failed to load image header: %r\n", Status));
+      Info->BootState = RED;
+      goto out;
+    } else if (ImageHdrSize < sizeof (boot_img_hdr)) {
+      DEBUG ((EFI_D_ERROR,
+              "ERROR: Invalid image header size: %u\n", ImageHdrSize));
+      Info->BootState = RED;
+      Status = EFI_BAD_BUFFER_SIZE;
+      goto out;
+    }
+
+    Info->HeaderVersion = ((boot_img_hdr *)(ImageHdrBuffer))->header_version;
+    DEBUG ((EFI_D_VERBOSE, "Header version  %d\n", Info->HeaderVersion));
 
     if (!Info->NumLoadedImages) {
       AddRequestedPartition (RequestedPartitionAll, IMG_BOOT);
       NumRequestedPartition += 1;
     }
 
-    AddRequestedPartition (RequestedPartitionAll, IMG_DTBO);
-    NumRequestedPartition += 1;
+    if (!HibernationResume) {
+      AddRequestedPartition (RequestedPartitionAll, IMG_DTBO);
+      NumRequestedPartition += 1;
+    }
 
     if (Info->MultiSlotBoot) {
         CurrentSlot = GetCurrentSlotSuffix ();
     }
 
-    if (IsValidPartition (&CurrentSlot, L"vendor_boot")) {
+    /* Load vendor boot in following conditions
+     * 1. In Case of header version 3
+     * 2. valid partititon.
+     */
+
+    if (IsValidPartition (&CurrentSlot, L"vendor_boot") &&
+       (Info->HeaderVersion >= BOOT_HEADER_VERSION_THREE ||
+        Info->HeaderVersion == BOOT_HEADER_VERSION_ZERO)) {
       AddRequestedPartition (RequestedPartitionAll, IMG_VENDOR_BOOT);
       NumRequestedPartition += 1;
     } else {
@@ -1279,6 +1558,11 @@ LoadImageAndAuthVB2 (BootInfo *Info)
         !IsBuildUseRecoveryAsBoot () &&
         IsRecoveryHasNoKernel ()) {
       AddRequestedPartition (RequestedPartitionAll, IMG_RECOVERY);
+      NumRequestedPartition += 1;
+    }
+
+    if (Info->HasBootInitRamdisk) {
+      AddRequestedPartition (RequestedPartitionAll, IMG_INIT_BOOT);
       NumRequestedPartition += 1;
     }
 
@@ -1294,15 +1578,18 @@ LoadImageAndAuthVB2 (BootInfo *Info)
 
   if (AllowVerificationError && ResultShouldContinue (Result)) {
     DEBUG ((EFI_D_VERBOSE, "State: Unlocked, AvbSlotVerify returned "
-                         "%a, continue boot\n",
-            avb_slot_verify_result_to_string (Result)));
+                           "%a, continue boot\n",
+                           avb_slot_verify_result_to_string (Result)));
   } else if (Result != AVB_SLOT_VERIFY_RESULT_OK) {
     DEBUG ((EFI_D_ERROR, "ERROR: Device State %a, AvbSlotVerify returned %a\n",
-            AllowVerificationError ? "Unlocked" : "Locked",
-            avb_slot_verify_result_to_string (Result)));
+                          AllowVerificationError ? "Unlocked" : "Locked",
+                          avb_slot_verify_result_to_string (Result)));
     Status = EFI_LOAD_ERROR;
     Info->BootState = RED;
     goto out;
+  } else {
+    UpdateRollbackIndex = TRUE;
+    DEBUG ((EFI_D_INFO, "VB2: UpdateRollbackIndex flag set \n"));
   }
 
   for (UINTN ReqIndex = 0; ReqIndex < NumRequestedPartition; ReqIndex++) {
@@ -1347,6 +1634,36 @@ LoadImageAndAuthVB2 (BootInfo *Info)
   }
 
   DEBUG ((EFI_D_VERBOSE, "Total loaded partition %d\n", Info->NumLoadedImages));
+
+  if (UpdateRollbackIndex == TRUE) {
+
+    AvbIOResult AvbStatus = AVB_IO_RESULT_OK;
+    UINT64 CurrentValue;
+    UINT64 StoredValue;
+    UINT32 Idx;
+
+    for (Idx = 0; Idx < AVB_MAX_NUMBER_OF_ROLLBACK_INDEX_LOCATIONS; Idx++) {
+      CurrentValue = SlotData->rollback_indexes[Idx];
+      if (CurrentValue != 0) {
+        AvbStatus = Ops->read_rollback_index (Ops, Idx, &StoredValue);
+        if (AvbStatus == AVB_IO_RESULT_OK) {
+          if (StoredValue < CurrentValue) {
+            AvbStatus = Ops->write_rollback_index (Ops, Idx, CurrentValue);
+          }
+        }
+      }
+
+      if (AvbStatus == AVB_IO_RESULT_ERROR_OOM) {
+        Status = EFI_OUT_OF_RESOURCES;
+        goto out;
+      } else if (AvbStatus != AVB_IO_RESULT_OK) {
+        DEBUG ((EFI_D_ERROR, "Error getting rollback index for slot.\n"));
+        Status = EFI_DEVICE_ERROR;
+        goto out;
+      }
+    }
+    DEBUG ((EFI_D_INFO, "VB2: UpdateRollbackIndex done. \n"));
+  }
 
   VBData = (VB2Data *)avb_calloc (sizeof (VB2Data));
   if (VBData == NULL) {
@@ -1394,6 +1711,18 @@ LoadImageAndAuthVB2 (BootInfo *Info)
     goto out;
   }
 
+#ifdef ASUS_BUILD
+  DEBUG ((EFI_D_ERROR, "AsusVbmetaVerified = %d, AsusBootVerified = %d, AsusDtboVerified = %d\n", 
+                                                AsusVbmetaVerified, AsusBootVerified, AsusDtboVerified));
+  DEBUG ((EFI_D_ERROR, "AsusVendorBootVerified = %d, AsusInitBootVerified = %d\n", 
+                                                AsusVendorBootVerified, AsusInitBootVerified));                                              
+  if ( AsusVbmetaVerified && AsusBootVerified && AsusDtboVerified && AsusVendorBootVerified && AsusInitBootVerified) {
+    Info->AsusVerifiedState = TRUE;
+  } else {
+    Info->AsusVerifiedState = FALSE;
+  }
+#endif
+
   if (AllowVerificationError) {
     Info->BootState = ORANGE;
   } else {
@@ -1404,69 +1733,42 @@ LoadImageAndAuthVB2 (BootInfo *Info)
     }
   }
 
-  /* command line */
-  GUARD_OUT (AppendVBCommonCmdLine (Info));
-  GUARD_OUT (AppendVBCmdLine (Info, SlotData->cmdline));
+  if (!HibernationResume) {
+    /* command line */
+    GUARD_OUT (AppendVBCommonCmdLine (Info));
+    GUARD_OUT (AppendVBCmdLine (Info, SlotData->cmdline));
+  }
+  /* Set Rot & Boot State*/
+#if defined ASUS_BUILD
+  if(IsDebugUnlocked()){ //ASUS BSP: set keymaster status to locked in order to keep widevine level to L1
+	Data.Color = GREEN;
+	Data.IsUnlocked = FALSE;
+  }else{
+	Data.Color = Info->BootState;
+	Data.IsUnlocked = AllowVerificationError;
+  }
+#else
+  Data.Color = Info->BootState;
+  Data. IsUnlocked = AllowVerificationError;
+#endif
+  Data.PublicKeyLength = UserData->PublicKeyLen;
+  Data.PublicKey = UserData->PublicKey;
 
-  Status = Info->VbIntf->VBIsKeymasterEnabled (Info->VbIntf,
-                                               &KeymasterEnabled);
-  if (Status != EFI_SUCCESS) {
-    DEBUG ((EFI_D_ERROR, "Checking Keymaster Enablement failed %r\n", Status));
-    return Status;
+  GUARD_OUT (GetOsVerAndSecPactchLevel (SlotData,
+                                        BootImgHdr,
+                                        &Data.SystemVersion,
+                                        &Data.SystemSecurityLevel));
+
+  if (!SetRotAndBootState) {
+      GUARD_OUT (KeyMasterSetRotAndBootState (&Data));
   }
 
-  if (KeymasterEnabled) {
-    /* Set Rot & Boot State*/
-    Data.Color = Info->BootState;
-    Data. IsUnlocked = AllowVerificationError;
-    Data.PublicKeyLength = UserData->PublicKeyLen;
-    Data.PublicKey = UserData->PublicKey;
-
-    GUARD_OUT (KeyMasterGetDateSupport (&DateSupport));
-
-    if (BootImgHdr->header_version >= BOOT_HEADER_VERSION_THREE) {
-      OSVersion = ((boot_img_hdr_v3 *)(ImageBuffer))->os_version;
-    } else {
-      OSVersion = BootImgHdr->os_version;
-    }
-
-    /* Send date value in security patch only when KM TA supports it and the
-    * property is available in vbmeta data, send the old value in other cases
-    */
-    DEBUG ((EFI_D_VERBOSE, "DateSupport: %d\n", DateSupport));
-    if (DateSupport) {
-      BootSecurityLevel = avb_property_lookup (
-                            SlotData->vbmeta_images[0].vbmeta_data,
-                            SlotData->vbmeta_images[0].vbmeta_size,
-                            "com.android.build.boot.security_patch",
-                            0, &BootSecurityLevelSize);
-
-      if (BootSecurityLevel != NULL &&
-          BootSecurityLevelSize == MAX_PROPERTY_SIZE) {
-        Data.SystemSecurityLevel = ParseBootSecurityLevel (BootSecurityLevel,
-                                                        BootSecurityLevelSize);
-        if (Data.SystemSecurityLevel < 0) {
-          DEBUG ((EFI_D_ERROR, "System security patch level format invalid\n"));
-          Status = EFI_INVALID_PARAMETER;
-          goto out;
-        }
-      }
-      else {
-        Data.SystemSecurityLevel = (OSVersion & 0x7FF);
-      }
-    }
-    else {
-      Data.SystemSecurityLevel = (OSVersion & 0x7FF);
-    }
-    Data.SystemVersion = (OSVersion & 0xFFFFF800) >> 11;
-
-    GUARD_OUT (KeyMasterSetRotAndBootState (&Data));
+  if (!HibernationResume) {
     ComputeVbMetaDigest (SlotData, (CHAR8 *)&Digest);
-    GUARD_OUT (SetVerifiedBootHash ( (CONST CHAR8 *)&Digest, sizeof (Digest)));
+    GUARD_OUT (SetVerifiedBootHash ((CONST CHAR8 *)&Digest, sizeof (Digest)));
+    DEBUG ((EFI_D_INFO, "VB2: Authenticate complete! boot state is: %a\n",
+            VbSn[Info->BootState].name));
   }
-  DEBUG ((EFI_D_INFO, "VB2: Authenticate complete! boot state is: %a\n",
-          VbSn[Info->BootState].name));
-
 out:
   if (Status != EFI_SUCCESS) {
     if (SlotData != NULL) {
@@ -1483,7 +1785,22 @@ out:
     }
     Info->BootState = RED;
     if (Info->MultiSlotBoot) {
+#if ASUS_AB_RETRY_UPDATE
+      if(!strcmp (SlotSuffix, "_a")){
+       Status = SlotAUnbootableShowScreen();
+      }else if(!strcmp (SlotSuffix, "_b")){
+       Status = SlotBUnbootableShowScreen();
+      }
+      MicroSecondDelay (30000000);
+      ShutdownDevice();
+#endif
+#ifdef ASUS_BUILD
+      if (!CheckAsusVerifiedState && !CheckAsusVerifiedStateMenu){
+        HandleActiveSlotUnbootable ();
+      }
+#else
       HandleActiveSlotUnbootable ();
+#endif
       /* HandleActiveSlotUnbootable should have swapped slots and
        * reboot the device. If no bootable slot found, enter fastboot
        */
@@ -1520,54 +1837,68 @@ DisplayVerifiedBootScreen (BootInfo *Info)
   DEBUG ((EFI_D_VERBOSE, "Boot State is : %d\n", Info->BootState));
   switch (Info->BootState) {
   case RED:
-    Status = DisplayVerifiedBootMenu (DISPLAY_MENU_RED);
-    if (Status != EFI_SUCCESS) {
-      DEBUG ((EFI_D_INFO,
-              "Your device is corrupt. It can't be trusted and will not boot."
-              "\nYour device will shutdown in 30s\n"));
+#ifdef ASUS_BUILD
+    if(IsSecureBootEnabled() && !CheckAsusVerifiedState && !CheckAsusVerifiedStateMenu){
+#endif
+        Status = DisplayVerifiedBootMenu (DISPLAY_MENU_RED);
+        if (Status != EFI_SUCCESS) {
+            DEBUG ((EFI_D_INFO,
+                  "Your device is corrupt. It can't be trusted and will not boot."
+                  "\nYour device will shutdown in 10s\n"));
+        }
+        MicroSecondDelay (10000000);
+        ShutdownDevice ();
+#ifdef ASUS_BUILD
     }
-    MicroSecondDelay (30000000);
-    ShutdownDevice ();
+#endif
     break;
   case YELLOW:
-    Status = DisplayVerifiedBootMenu (DISPLAY_MENU_YELLOW);
-    if (Status == EFI_SUCCESS) {
-      WaitForExitKeysDetection ();
-    } else {
-      DEBUG ((EFI_D_INFO, "Your device has loaded a different operating system."
-                          "\nWait for 5 seconds before proceeding\n"));
-      MicroSecondDelay (5000000);
+#ifdef ASUS_BUILD
+    if(IsSecureBootEnabled() && !CheckAsusVerifiedState && !CheckAsusVerifiedStateMenu){
+#endif
+        Status = DisplayVerifiedBootMenu (DISPLAY_MENU_YELLOW);
+        if (Status == EFI_SUCCESS) {
+          WaitForExitKeysDetection ();
+        } else {
+          DEBUG ((EFI_D_INFO, "Your device has loaded a different operating system."
+                              "\nWait for 5 seconds before proceeding\n"));
+        }
+#ifdef ASUS_BUILD
     }
+#endif
     break;
   case ORANGE:
-    if (FfbmStr[0] != '\0' && !TargetBuildVariantUser ()) {
-      DEBUG ((EFI_D_VERBOSE, "Device will boot into FFBM mode\n"));
-    } else {
-      Status = DisplayVerifiedBootMenu (DISPLAY_MENU_ORANGE);
-      if (Status == EFI_SUCCESS) {
-        WaitForExitKeysDetection ();
-      } else {
-        DEBUG (
-            (EFI_D_INFO, "Device is unlocked, Skipping boot verification\n"));
-        MicroSecondDelay (5000000);
-      }
+#ifdef ASUS_BUILD
+    if(IsSecureBootEnabled() && !CheckAsusVerifiedState && !CheckAsusVerifiedStateMenu){
+#endif
+        if (FfbmStr[0] != '\0' && !TargetBuildVariantUser ()) {
+          DEBUG ((EFI_D_VERBOSE, "Device will boot into FFBM mode\n"));
+        } else {
+          Status = DisplayVerifiedBootMenu (DISPLAY_MENU_ORANGE);
+          if (Status == EFI_SUCCESS) {
+            WaitForExitKeysDetection ();
+          } else {
+            DEBUG (
+                (EFI_D_INFO, "Device is unlocked, Skipping boot verification\n"));
+          }
+        }
+#ifdef ASUS_BUILD
     }
+#endif
     break;
   default:
     break;
   }
 
   /* dm-verity warning */
-  if ((GetAVBVersion () != AVB_2) &&
-      !IsEnforcing () &&
-     !Info->BootIntoRecovery) {
-    Status = DisplayVerifiedBootMenu (DISPLAY_MENU_EIO);
+  if ( !IsEnforcing () &&
+       !Info->BootIntoRecovery) {
+      Status = DisplayVerifiedBootMenu (DISPLAY_MENU_EIO);
       if (Status == EFI_SUCCESS) {
         WaitForExitKeysDetection ();
       } else {
         DEBUG ((EFI_D_INFO, "The dm-verity is not started in restart mode." \
               "\nWait for 30 seconds before proceeding\n"));
-        MicroSecondDelay (30000000);
       }
   }
 
@@ -1590,6 +1921,7 @@ STATIC EFI_STATUS LoadImageAndAuthForLE (BootInfo *Info)
     CHAR8 *SystemPath = NULL;
     UINT32 SystemPathLen = 0;
     BOOLEAN SecureDevice = FALSE;
+    UINT32 PageSize = 0;
     KMRotAndBootStateForLE Data = {0};
     secasn1_data_type Modulus = {NULL};
     secasn1_data_type PublicExp = {NULL};
@@ -1598,7 +1930,17 @@ STATIC EFI_STATUS LoadImageAndAuthForLE (BootInfo *Info)
     /*Load image*/
     GUARD (VBAllocateCmdLine (Info));
     GUARD (VBCommonInit (Info));
-    GUARD (LoadImageNoAuth (Info));
+
+    /* In case of flashless LE devices images are already loaded and verified
+     * by previous bootloaders, so just fill the BootInfo structure with
+     * required parameters
+     */
+    if (Info->FlashlessBoot) {
+      GUARD (LocateImageNoAuth (Info, &PageSize));
+      goto skip_verification;
+    } else {
+      GUARD (LoadImageNoAuth (Info));
+    }
 
     Status = IsSecureDevice (&SecureDevice);
     if (Status != EFI_SUCCESS) {
@@ -1615,15 +1957,6 @@ STATIC EFI_STATUS LoadImageAndAuthForLE (BootInfo *Info)
         return Status;
     }
 
-    /* Check if LoadKeymasterFlag is enabled or not */
-    Status = Info->VbIntf->VBIsKeymasterEnabled (Info->VbIntf,
-                                                  &KeymasterEnabled);
-    if (Status != EFI_SUCCESS) {
-      DEBUG ((EFI_D_ERROR, "Checking Keymaster Enablement failed %r\n",
-                                                                  Status));
-      return Status;
-    }
-
     /* Read OEM certificate from the embedded header file */
     Status = QcomAsn1X509Protocal->ASN1X509VerifyOEMCertificate
                 (QcomAsn1X509Protocal, OemCertFile, OemCertFileLen, &OemCert);
@@ -1631,6 +1964,13 @@ STATIC EFI_STATUS LoadImageAndAuthForLE (BootInfo *Info)
         DEBUG ((EFI_D_ERROR, "VB: Error during "
                       "ASN1X509VerifyOEMCertificate: %r\n", Status));
         return Status;
+    }
+
+    if (!SecureDevice) {
+      if (!TargetBuildVariantUser () ) {
+        DEBUG ((EFI_D_INFO, "VB: verification skipped for debug builds\n"));
+        goto set_rot;
+      }
     }
 
     /* Initialize Verified Boot*/
@@ -1650,7 +1990,7 @@ STATIC EFI_STATUS LoadImageAndAuthForLE (BootInfo *Info)
     ImgSize = Info->Images[0].ImageSize;
     ImgHash = AllocateZeroPool (HashSize);
     if (ImgHash == NULL) {
-        DEBUG ((EFI_D_ERROR, "kernel image hashbuffer allocation failed!\n"));
+        DEBUG ((EFI_D_ERROR, "kernel image hash buffer allocation failed!\n"));
         Status = EFI_OUT_OF_RESOURCES;
         return Status;
     }
@@ -1658,7 +1998,7 @@ STATIC EFI_STATUS LoadImageAndAuthForLE (BootInfo *Info)
                 (UINT8 *)Info->Images[0].ImageBuffer,
                 ImgSize, ImgHash, HashSize);
     if (Status != EFI_SUCCESS) {
-        DEBUG ((EFI_D_ERROR, "VB: Error during VBGetImageHash:%r\n", Status));
+        DEBUG ((EFI_D_ERROR, "VB: Error during VBGetImageHash: %r\n", Status));
         return Status;
     }
 
@@ -1670,35 +2010,18 @@ STATIC EFI_STATUS LoadImageAndAuthForLE (BootInfo *Info)
     if (Status != EFI_SUCCESS) {
         DEBUG ((EFI_D_ERROR, "VB: Error during "
                       "LEVBVerifyHashWithSignature: %r\n", Status));
-
-        /* There are build variants where boot image is not signed.
-         * Below check allows the device to bootup even if the
-         * authentication fails on a Non-secure device.
-         * Note: Dummy Root of Trust will be set if image
-         * authentication fails or boot image is not signed.
-         */
-         if (!SecureDevice &&
-             !TargetBuildVariantUser ()) {
-                if (KeymasterEnabled) {
-                    Data.PublicKeyModLength = DUMMY_PUBLIC_KEY_MOD_LEN;
-                    Data.PublicKeyMod = avb_calloc (DUMMY_PUBLIC_KEY_MOD_LEN);
-                    Data.PublicKeyExpLength = DUMMY_PUBLIC_KEY_EXP_LEN;
-                    Data.PublicKeyExp = avb_calloc (DUMMY_PUBLIC_KEY_EXP_LEN);
-                    if (Data.PublicKeyMod != NULL &&
-                            Data.PublicKeyExp != NULL) {
-                        Status = KeyMasterSetRotForLE (&Data);
-                        if (Status != EFI_SUCCESS) {
-                            DEBUG ((EFI_D_ERROR, "KeyMasterSetRotForLE failed "
-                                                            "%r\n", Status));
-                            return Status;
-                        }
-                        DEBUG ((EFI_D_INFO, "VB: Dummy ROT set\n"));
-                    }
-                }
-                goto skip_verification;
-         }
+        return Status;
     }
     DEBUG ((EFI_D_INFO, "VB: LoadImageAndAuthForLE complete!\n"));
+
+set_rot:
+    Status = Info->VbIntf->VBIsKeymasterEnabled (Info->VbIntf,
+                                                  &KeymasterEnabled);
+    if (Status != EFI_SUCCESS) {
+      DEBUG ((EFI_D_ERROR, "Checking Keymaster Enablement failed %r\n",
+                                                                  Status));
+      return Status;
+    }
 
     if (KeymasterEnabled) {
       /* Set Rot & Boot State*/
@@ -1724,18 +2047,24 @@ STATIC EFI_STATUS LoadImageAndAuthForLE (BootInfo *Info)
 
 skip_verification:
     if (!IsRootCmdLineUpdated (Info)) {
-      SystemPathLen = GetSystemPath (&SystemPath, Info);
-      if (SystemPathLen == 0 ||
-          SystemPath == NULL) {
+        SystemPathLen = GetSystemPath (&SystemPath,
+                                       Info->MultiSlotBoot,
+                                       Info->BootIntoRecovery,
+                                       (CHAR16 *)L"system",
+                                       (CHAR8 *)"root",
+                                       Info->FlashlessBoot);
+        if (SystemPathLen == 0 ||
+            SystemPath == NULL) {
             return EFI_LOAD_ERROR;
-      }
-      GUARD (AppendVBCmdLine (Info, SystemPath));
+        }
+        GUARD (AppendVBCmdLine (Info, SystemPath));
     }
     return Status;
 }
 
 EFI_STATUS
-LoadImageAndAuth (BootInfo *Info)
+LoadImageAndAuth (BootInfo *Info, BOOLEAN HibernationResume,
+                        BOOLEAN SetRotAndBootState)
 {
   EFI_STATUS Status = EFI_SUCCESS;
   BOOLEAN MdtpActive = FALSE;
@@ -1743,12 +2072,18 @@ LoadImageAndAuth (BootInfo *Info)
   UINT32 AVBVersion = NO_AVB;
   VOID *RecoveryHdr = NULL;
   UINT32 RecoveryHdrSz = 0;
+  VOID *InitBootHdr = NULL;
+  UINT32 InitBootHdrSz = 0;
 
   WaitForFlashFinished ();
 
   if (Info == NULL) {
     DEBUG ((EFI_D_ERROR, "Invalid parameter Info\n"));
     return EFI_INVALID_PARAMETER;
+  }
+
+  if (Info->FlashlessBoot) {
+    goto get_ptn_name;
   }
 
   /* check early if recovery exists and has a kernel size */
@@ -1764,11 +2099,37 @@ LoadImageAndAuth (BootInfo *Info)
     SetRecoveryHasNoKernel ();
   }
 
+  /* HasBootInitRamdisk flag 0, if ini_boot partition is not present */
+  Info->HasBootInitRamdisk = false;
+
+  Status = LoadPartitionImageHeader (Info, (CHAR16 *)L"init_boot",
+                                     &InitBootHdr,
+                                     &InitBootHdrSz);
+
+  /* check early if init_boot exists */
+  if (!Status &&
+      InitBootHdrSz) {
+
+    if (((boot_img_hdr_v4 *)InitBootHdr)->header_version >=
+          BOOT_HEADER_VERSION_FOUR &&
+          ((boot_img_hdr_v4 *)InitBootHdr)->ramdisk_size) {
+
+      Info->HasBootInitRamdisk = true;
+
+    }
+  }
+
+  if (InitBootHdr) {
+    FreePages (InitBootHdr,
+               ALIGN_PAGES (BOOT_IMG_MAX_PAGE_SIZE, ALIGNMENT_MASK_4KB));
+  }
+
   if (RecoveryHdr) {
     FreePages (RecoveryHdr,
                ALIGN_PAGES (BOOT_IMG_MAX_PAGE_SIZE, ALIGNMENT_MASK_4KB));
   }
 
+get_ptn_name:
   /* Get Partition Name*/
   if (!Info->MultiSlotBoot) {
     if (Info->BootIntoRecovery &&
@@ -1818,16 +2179,18 @@ LoadImageAndAuth (BootInfo *Info)
 
   DEBUG ((EFI_D_VERBOSE, "MultiSlot %a, partition name %s\n",
           BooleanString[Info->MultiSlotBoot].name, Info->Pname));
-
-  if (FixedPcdGetBool (EnableMdtpSupport)) {
-    Status = IsMdtpActive (&MdtpActive);
-    if (EFI_ERROR (Status)) {
-      DEBUG ((EFI_D_ERROR, "Failed to get activation state for MDTP, "
-                           "Status=%r."
-                           " Considering MDTP as active and continuing \n",
-              Status));
-      if (Status != EFI_NOT_FOUND)
-        MdtpActive = TRUE;
+  if (!HibernationResume) {
+    if (FixedPcdGetBool (EnableMdtpSupport)) {
+      Status = IsMdtpActive (&MdtpActive);
+      if (EFI_ERROR (Status)) {
+        DEBUG ((EFI_D_ERROR, "Failed to get activation state for MDTP, "
+                             "Status=%r."
+                             " Considering MDTP as active and continuing \n",
+                Status));
+        if (Status != EFI_NOT_FOUND) {
+          MdtpActive = TRUE;
+        }
+      }
     }
   }
 
@@ -1843,7 +2206,7 @@ LoadImageAndAuth (BootInfo *Info)
     Status = LoadImageAndAuthVB1 (Info);
     break;
   case AVB_2:
-    Status = LoadImageAndAuthVB2 (Info);
+    Status = LoadImageAndAuthVB2 (Info, HibernationResume, SetRotAndBootState);
     break;
   case AVB_LE:
     Status = LoadImageAndAuthForLE (Info);
@@ -1851,6 +2214,10 @@ LoadImageAndAuth (BootInfo *Info)
   default:
     DEBUG ((EFI_D_ERROR, "Unsupported AVB version %d\n", AVBVersion));
     Status = EFI_UNSUPPORTED;
+  }
+
+  if (HibernationResume) {
+    return Status;
   }
 
   // if MDTP is active Display Recovery UI
@@ -1874,9 +2241,7 @@ LoadImageAndAuth (BootInfo *Info)
   if (AVBVersion != AVB_LE) {
     DisplayVerifiedBootScreen (Info);
     DEBUG ((EFI_D_VERBOSE, "Sending Milestone Call\n"));
-    if (KeymasterEnabled) {
-      Status = Info->VbIntf->VBSendMilestone (Info->VbIntf);
-    }
+    Status = Info->VbIntf->VBSendMilestone (Info->VbIntf);
     if (Status != EFI_SUCCESS) {
       DEBUG ((EFI_D_ERROR, "Error sending milestone call to TZ\n"));
       return Status;

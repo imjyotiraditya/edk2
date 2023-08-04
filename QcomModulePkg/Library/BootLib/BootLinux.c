@@ -27,13 +27,12 @@
  * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
  * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
  * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
  */
 
-/*
+ /*
  * Changes from Qualcomm Innovation Center are provided under the following license:
  *
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  *  Redistribution and use in source and binary forms, with or without
  *  modification, are permitted (subject to the limitations in the
@@ -87,9 +86,51 @@
 #include "Bootconfig.h"
 #include <ufdt_overlay.h>
 
+#ifdef ASUS_AI2205_BUILD
+extern BOOLEAN EnterChargingMode;
+#endif
+
 STATIC QCOM_SCM_MODE_SWITCH_PROTOCOL *pQcomScmModeSwitchProtocol = NULL;
 STATIC BOOLEAN BootDevImage;
 STATIC BOOLEAN RecoveryHasNoKernel = FALSE;
+
+STATIC VOID
+SetLinuxBootCpu (UINT32 BootCpu)
+{
+  EFI_STATUS Status;
+  Status = gRT->SetVariable (L"DestinationCore",
+      &gQcomTokenSpaceGuid,
+      (EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_NON_VOLATILE |
+       EFI_VARIABLE_RUNTIME_ACCESS),
+       sizeof (UINT32),
+       (VOID*)(UINT32*)&BootCpu);
+
+  if (Status != EFI_SUCCESS) {
+       DEBUG ((EFI_D_ERROR, "Error: Failed to set Linux boot cpu:%d\n",
+                BootCpu));
+   } else if (Status == EFI_SUCCESS) {
+       DEBUG ((EFI_D_INFO, "Switching to physical CPU:%d for Booting Linux\n",
+                BootCpu));
+   }
+
+  return;
+}
+
+#ifdef LINUX_BOOT_CPU_SELECTION_ENABLED
+#define BootCpuId TARGET_LINUX_BOOT_CPU_ID
+STATIC BOOLEAN
+BootCpuSelectionEnabled (VOID)
+{
+  return TRUE;
+}
+#else
+#define BootCpuId 0
+STATIC BOOLEAN
+BootCpuSelectionEnabled (VOID)
+{
+  return FALSE;
+}
+#endif
 
 /* To set load addresses, callers should make sure to initialize the
  * BootParamlistPtr before calling this function */
@@ -522,10 +563,6 @@ DTBImgCheckAndAppendDT (BootInfo *Info, BootParamlist *BootParamlistPtr)
       SingleDtHdr = (BootParamlistPtr->ImageBuffer +
                      BootParamlistPtr->DtbOffset);
 
-      if (HeaderVersion < BOOT_HEADER_VERSION_ONE) {
-        SingleDtHdr += BootParamlistPtr->PageSize;
-      }
-
       if (!fdt_check_header (SingleDtHdr)) {
         if ((ImageSize - BootParamlistPtr->DtbOffset) <
             fdt_totalsize (SingleDtHdr)) {
@@ -554,6 +591,58 @@ DTBImgCheckAndAppendDT (BootInfo *Info, BootParamlist *BootParamlistPtr)
         DEBUG ((EFI_D_ERROR, "Error: Device Tree blob not found\n"));
         return EFI_NOT_FOUND;
       }
+      Dtb = SingleDtHdr;
+    }
+
+    /* If hypervisor boot info is present, append dtbo info passed from hyp */
+    if (IsVmEnabled ()) {
+      if (BootParamlistPtr->HypDtboBaseAddr == NULL) {
+        DEBUG ((EFI_D_ERROR, "Error: HypOverlay DT is NULL\n"));
+        return EFI_NOT_FOUND;
+      }
+
+      for (UINT32 i = 0; i < BootParamlistPtr->NumHypDtbos; i++) {
+        /* Flag the invalid dtbos and overlay the valid ones */
+        if (!BootParamlistPtr->HypDtboBaseAddr[i] ||
+             fdt_check_header ((VOID *)BootParamlistPtr->HypDtboBaseAddr[i])) {
+          DEBUG ((EFI_D_ERROR, "HypInfo: Not overlaying hyp dtbo"
+                  "Dtbo :%d is null or Bad DT header\n", i));
+          continue;
+        }
+
+        /* Allocate buffer temporarily */
+        TempHypBootInfo[i] = AllocateZeroPool (fdt_totalsize
+                                      (BootParamlistPtr->HypDtboBaseAddr[i]));
+
+        if (!TempHypBootInfo[i]) {
+          DEBUG ((EFI_D_ERROR,
+                 "Failed to allocate memory for HypDtbo %d\n", i));
+          return EFI_OUT_OF_RESOURCES;
+        }
+
+        /* Copy content from Hyp provided memory to temp buffer */
+        gBS->CopyMem ((VOID *)TempHypBootInfo[i],
+                      (VOID *)BootParamlistPtr->HypDtboBaseAddr[i],
+                      fdt_totalsize (BootParamlistPtr->HypDtboBaseAddr[i]));
+
+        if (!AppendToDtList (&DtsList,
+                       (fdt64_t)TempHypBootInfo[i],
+                       fdt_totalsize (BootParamlistPtr->HypDtboBaseAddr[i]))) {
+          DEBUG ((EFI_D_ERROR,
+                  "Unable to Allocate buffer for HypOverlay DT num: %d\n", i));
+          FreePool ((VOID *)TempHypBootInfo[i]);
+          DeleteDtList (&DtsList);
+          return EFI_OUT_OF_RESOURCES;
+        }
+      }
+    }
+
+    Status = ApplyOverlay (BootParamlistPtr,
+                           Dtb,
+                           DtsList);
+    if (Status != EFI_SUCCESS) {
+      DEBUG ((EFI_D_ERROR, "Error: Dtb overlay failed\n"));
+      return Status;
     }
   } else {
     /*It is the case of DTB overlay Get the Soc specific dtb */
@@ -819,10 +908,18 @@ LoadAddrAndDTUpdate (BootInfo *Info, BootParamlist *BootParamlistPtr)
     }
   }
 
-  gBS->CopyMem ((CHAR8 *)RamdiskLoadAddr,
-    BootParamlistPtr->ImageBuffer+
-    BootParamlistPtr->RamdiskOffset,
-    BootParamlistPtr->RamdiskSize);
+  if (Info->HasBootInitRamdisk) {
+    gBS->CopyMem ((CHAR8 *)RamdiskLoadAddr,
+                  BootParamlistPtr->RamdiskBuffer+
+                  BOOT_IMG_MAX_PAGE_SIZE,
+                  BootParamlistPtr->RamdiskSize);
+  } else {
+    gBS->CopyMem ((CHAR8 *)RamdiskLoadAddr,
+                  BootParamlistPtr->ImageBuffer+
+                  BootParamlistPtr->RamdiskOffset,
+                  BootParamlistPtr->RamdiskSize);
+  }
+
   RamdiskLoadAddr +=BootParamlistPtr->RamdiskSize;
 
   if (BootParamlistPtr->BootingWith32BitKernel) {
@@ -1061,6 +1158,7 @@ BootLinux (BootInfo *Info)
   CHAR16 *PartitionName = NULL;
   BOOLEAN Recovery = FALSE;
   BOOLEAN AlarmBoot = FALSE;
+  BOOLEAN FlashlessBoot = Info->FlashlessBoot;
 
   LINUX_KERNEL LinuxKernel;
   LINUX_KERNEL32 LinuxKernel32;
@@ -1097,12 +1195,14 @@ BootLinux (BootInfo *Info)
   Recovery = Info->BootIntoRecovery;
   AlarmBoot = Info->BootReasonAlarm;
 
-  if (!StrnCmp (PartitionName, (CONST CHAR16 *)L"boot",
-                StrLen ((CONST CHAR16 *)L"boot"))) {
-    Status = GetFfbmCommand (FfbmStr, FFBM_MODE_BUF_SIZE);
-    if (Status != EFI_SUCCESS) {
-      DEBUG ((EFI_D_VERBOSE, "No Ffbm cookie found, ignore: %r\n", Status));
-      FfbmStr[0] = '\0';
+  if (!FlashlessBoot) {
+    if (!StrnCmp (PartitionName, (CONST CHAR16 *)L"boot",
+                  StrLen ((CONST CHAR16 *)L"boot"))) {
+      Status = GetFfbmCommand (FfbmStr, FFBM_MODE_BUF_SIZE);
+      if (Status != EFI_SUCCESS) {
+        DEBUG ((EFI_D_VERBOSE, "No Ffbm cookie found, ignore: %r\n", Status));
+        FfbmStr[0] = '\0';
+      }
     }
   }
 
@@ -1138,6 +1238,26 @@ BootLinux (BootInfo *Info)
   Status = UpdateBootParamsSizeAndCmdLine (Info, &BootParamlistPtr);
   if (Status != EFI_SUCCESS) {
     return Status;
+  }
+
+  /* When there is init_boot partition exist, use ramdisk
+   * in init_boot anyway. note that BootHasNoKernel will be
+   * only set true when there is init_boot partition.
+   */
+  BootParamlistPtr.RamdiskBuffer = NULL;
+  if (Info->HasBootInitRamdisk) {
+    Status = GetImage (Info,
+                       &BootParamlistPtr.RamdiskBuffer,
+                       (UINTN *)&BootParamlistPtr.RamdiskSize,
+                       "init_boot");
+
+    if (Status ||
+        BootParamlistPtr.RamdiskSize <= 0) {
+
+      DEBUG ((EFI_D_ERROR, "BootLinux: Get%aImage failed!\n",
+             "init_boot"));
+      return EFI_NOT_STARTED;
+    }
   }
 
   // Retrive Base Memory Address from Ram Partition Table
@@ -1218,12 +1338,9 @@ BootLinux (BootInfo *Info)
    * Called before ShutdownUefiBootServices as it uses some boot service
    * functions
    */
-  Status = UpdateCmdLine (BootParamlistPtr.CmdLine, FfbmStr, Recovery,
-                   AlarmBoot, Info->VBCmdLine, &BootParamlistPtr.FinalCmdLine,
-                   &BootParamlistPtr.FinalBootConfig,
-                   &BootParamlistPtr.FinalBootConfigLen,
-                   Info->HeaderVersion,
-                   (VOID *)BootParamlistPtr.DeviceTreeLoadAddr);
+  Status = UpdateCmdLine (&BootParamlistPtr, FfbmStr, Recovery, FlashlessBoot,
+                    AlarmBoot, Info->VBCmdLine, Info->HeaderVersion);
+
   if (EFI_ERROR (Status)) {
     DEBUG ((EFI_D_ERROR, "Error updating cmdline. Device Error %r\n", Status));
     return Status;
@@ -1248,6 +1365,16 @@ BootLinux (BootInfo *Info)
       IsModeSwitch = TRUE;
   }
 
+#ifdef ASUS_AI2205_BUILD
+  if(!EnterChargingMode){
+    DrawAndroid();
+    MicroSecondDelay(500000);
+    DrawLogo();
+  }  else {
+      DrawAsusLogo_Charger();
+  }
+#endif
+
   Status = gBS->LocateProtocol (&gEfiKernelProtocolGuid, NULL,
         (VOID **)&KernIntf);
 
@@ -1258,9 +1385,11 @@ BootLinux (BootInfo *Info)
     goto Exit;
   }
 
-  ThreadNum = KernIntf->Thread->GetCurrentThread ();
-  StackBase = KernIntf->Thread->ThreadGetUnsafeSPBase (ThreadNum);
-  StackCurrent = KernIntf->Thread->ThreadGetUnsafeSPCurrent (ThreadNum);
+  if (KernIntf->Version >= EFI_KERNEL_PROTOCOL_VERSION) {
+    ThreadNum = KernIntf->Thread->GetCurrentThread ();
+    StackCurrent = KernIntf->Thread->ThreadGetUnsafeSPCurrent (ThreadNum);
+    StackBase = KernIntf->Thread->ThreadGetUnsafeSPBase (ThreadNum);
+  }
 
   DataSize = sizeof (KernelSizeReserved);
   Status = gRT->GetVariable ((CHAR16 *)L"KernelSize", &gQcomTokenSpaceGuid,
@@ -1269,6 +1398,9 @@ BootLinux (BootInfo *Info)
   if (Status != EFI_SUCCESS) {
     DEBUG ((EFI_D_INFO, "Failed to get size of kernel region\n"));
     return Status;
+  }
+  if (BootCpuSelectionEnabled ()) {
+    SetLinuxBootCpu (BootCpuId);
   }
 
   DEBUG ((EFI_D_INFO, "\nShutting Down UEFI Boot Services: %lu ms\n",
@@ -1393,8 +1525,7 @@ CheckImageHeader (VOID *ImageHdrBuffer,
     SecondSize = ((boot_img_hdr *)(ImageHdrBuffer))->second_size;
     *PageSize = ((boot_img_hdr *)(ImageHdrBuffer))->page_size;
   } else if (HeaderVersion == BOOT_HEADER_VERSION_THREE) {
-    if (!VendorImageHdrBuffer ||
-        CompareMem ((VOID *)((vendor_boot_img_hdr_v3 *)
+    if (CompareMem ((VOID *)((vendor_boot_img_hdr_v3 *)
                      (VendorImageHdrBuffer))->magic,
                      VENDOR_BOOT_MAGIC, VENDOR_BOOT_MAGIC_SIZE)) {
       DEBUG ((EFI_D_ERROR, "Invalid vendor_boot image header\n"));
@@ -1438,8 +1569,7 @@ CheckImageHeader (VOID *ImageHdrBuffer,
       }
     }
   } else if (HeaderVersion == BOOT_HEADER_VERSION_FOUR) {
-    if (!VendorImageHdrBuffer ||
-        CompareMem ((VOID *)((vendor_boot_img_hdr_v4 *)
+    if (CompareMem ((VOID *)((vendor_boot_img_hdr_v4 *)
                     (VendorImageHdrBuffer))->magic,
                     VENDOR_BOOT_MAGIC, VENDOR_BOOT_MAGIC_SIZE)) {
       DEBUG ((EFI_D_ERROR, "Invalid vendor_boot image header\n"));
@@ -1784,17 +1914,10 @@ BOOLEAN IsLEVariant (VOID)
 }
 #endif
 
-#ifdef BUILD_SYSTEM_ROOT_IMAGE
-BOOLEAN IsBuildAsSystemRootImage (VOID)
+BOOLEAN IsBuildAsSystemRootImage (BootParamlist *BootParamlistPtr)
 {
-  return TRUE;
+   return BootParamlistPtr->RamdiskSize == 0;
 }
-#else
-BOOLEAN IsBuildAsSystemRootImage (VOID)
-{
-  return FALSE;
-}
-#endif
 
 #ifdef BUILD_USES_RECOVERY_AS_BOOT
 BOOLEAN IsBuildUseRecoveryAsBoot (VOID)
@@ -1847,29 +1970,22 @@ BOOLEAN IsABRetryCountDisabled (VOID)
 }
 #endif
 
-#if DYNAMIC_PARTITION_SUPPORT
 BOOLEAN IsDynamicPartitionSupport (VOID)
 {
-  return TRUE;
-}
-#else
-BOOLEAN IsDynamicPartitionSupport (VOID)
-{
-  return FALSE;
-}
-#endif
+  UINT32 PtnCount;
+  INT32 PtnIdx;
 
-#if VIRTUAL_AB_OTA
-BOOLEAN IsVirtualAbOtaSupported (VOID)
-{
-  return TRUE;
+  GetPartitionCount (&PtnCount);
+
+  PtnIdx = GetPartitionIndex ((CHAR16 *)L"super");
+
+  if (PtnIdx < PtnCount &&
+      PtnIdx != INVALID_PTN) {
+    return TRUE;
+  } else {
+    return FALSE;
+  }
 }
-#else
-BOOLEAN IsVirtualAbOtaSupported (VOID)
-{
-  return FALSE;
-}
-#endif
 
 #if NAND_SQUASHFS_SUPPORT
 BOOLEAN IsNANDSquashFsSupport (VOID)
@@ -1883,25 +1999,35 @@ BOOLEAN IsNANDSquashFsSupport (VOID)
 }
 #endif
 
-#if DISPLAY_DISABLE
+#if TARGET_BOARD_TYPE_AUTO
 BOOLEAN IsEnableDisplayMenuFlagSupported (VOID)
 {
   return FALSE;
 }
-#else
-BOOLEAN IsEnableDisplayMenuFlagSupported (VOID)
-{
-  return FixedPcdGetBool (EnableDisplayMenu);
-}
-#endif
 
-#ifdef DDR_SUPPORTS_SCT_CONFIG
-BOOLEAN IsDDRSupportsSCTConfig (VOID)
+BOOLEAN IsTargetAuto (VOID)
 {
   return TRUE;
 }
 #else
-BOOLEAN IsDDRSupportsSCTConfig (VOID)
+BOOLEAN IsEnableDisplayMenuFlagSupported (VOID)
+{
+  return TRUE;
+}
+
+BOOLEAN IsTargetAuto (VOID)
+{
+  return FALSE;
+}
+#endif
+
+#if HIBERNATION_SUPPORT_NO_AES
+BOOLEAN IsHibernationEnabled (VOID)
+{
+  return TRUE;
+}
+#else
+BOOLEAN IsHibernationEnabled (VOID)
 {
   return FALSE;
 }

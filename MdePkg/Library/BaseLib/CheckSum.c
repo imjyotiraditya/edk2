@@ -600,6 +600,7 @@ GLOBAL_REMOVE_IF_UNREFERENCED CONST UINT32  mCrcTable[256] = {
   @retval Crc32            The 32-bit CRC was computed for the data buffer.
 
 **/
+/*
 UINT32
 EFIAPI
 CalculateCrc32(
@@ -624,3 +625,4 @@ CalculateCrc32(
 
   return Crc ^ 0xffffffff;
 }
+*/

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2018,2021 The Linux Foundation. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -76,6 +76,9 @@ typedef struct BootInfo BootInfo;
 BOOLEAN
 VerifiedBootEnbled ();
 
+BOOLEAN
+Is_VERIFIED_BOOT_2 (VOID);
+
 /**
  * @return  0 - AVB disabled
  *          1 - VB 1.0
@@ -90,10 +93,19 @@ GetAVBVersion ();
  * Also provides Verified Boot command
  * arguments (if any) in Info->VBCmdLine
  *
+ * @param[in] HibernationResume FALSE
+ * for cold boot sequence and TRUE
+ * for Hibernation Resume
+ *
+ * @param[in] SetRotAndBootState FALSE by
+ * default and TRUE incase of ROT and
+ * BootState already set
+ *
  * @return EFI_STATUS
  */
 EFI_STATUS
-LoadImageAndAuth (BootInfo *Info);
+LoadImageAndAuth (BootInfo *Info, BOOLEAN HibernationResume,
+        BOOLEAN SetRotAndBootState);
 
 /**
  *  Free resources/memory allocated by

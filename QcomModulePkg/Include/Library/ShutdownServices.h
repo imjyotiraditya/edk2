@@ -43,6 +43,42 @@
 *
 **/
 
+/*
+ * Changes from Qualcomm Innovation Center are provided under the following license:
+ *
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ *
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted (subject to the limitations in the
+ *  disclaimer below) provided that the following conditions are met:
+ *
+ *      * Redistributions of source code must retain the above copyright
+ *        notice, this list of conditions and the following disclaimer.
+ *
+ *      * Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and/or other materials provided
+ *        with the distribution.
+ *
+ *      * Neither the name of Qualcomm Innovation Center, Inc. nor the names of its
+ *        contributors may be used to endorse or promote products derived
+ *        from this software without specific prior written permission.
+ *
+ *  NO EXPRESS OR IMPLIED LICENSES TO ANY PARTY'S PATENT RIGHTS ARE
+ *  GRANTED BY THIS LICENSE. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT
+ *  HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED
+ *   WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+ *  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ *  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ *  ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ *  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+ *  GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ *  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+ *  IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+ *  OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
+ *  IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #ifndef __BDS_INTERNAL_H__
 #define __BDS_INTERNAL_H__
 
@@ -51,6 +87,7 @@
 #include <Library/BaseMemoryLib.h>
 #include <Library/CacheMaintenanceLib.h>
 #include <Library/DebugLib.h>
+#include <Library/Debug.h>
 #include <Library/DevicePathLib.h>
 #include <Library/HobLib.h>
 #include <Library/MemoryAllocationLib.h>
@@ -85,6 +122,17 @@ typedef enum {
   DM_VERITY_LOGGING = 0x4,
   DM_VERITY_ENFORCING = 0x5,
   DM_VERITY_KEYSCLEAR = 0x6,
+#ifdef ASUS_BUILD
+  //+++ ASUS_BSP : add for ASUS reboot cmd
+  ENABLE_ADB_MODE = 0x7, // +++ ASUS_BSP : add for adb enable
+  ASUS_SHUTDOWN = 0x08, // +++ ASUS_BSP : add for oem shutdown
+  ASUS_SHIPMODE = 0x09, // +++ ASUS_BSP : add for oem shipping mode
+  PANIC_REBOOT = 0x11, // +++ ASUS_BSP : add for reboot reason
+  ASUS_UNLOCK = 0x0a, // +++ ASUS_BSP : add for user unlock
+  ASUS_RE_PARTITION = 0x0b, // +++ ASUS_BSP : re-partition from gpt to partition:0 for add rawdump partition
+  SET_PERMISSIVE_MODE = 0x0c, // +++ ASUS_BSP : add for set permissive cmdline
+  //--- ASUS_BSP : add for ASUS reboot cmd
+#endif
   OEM_RESET_MIN = 0x20,
   OEM_RESET_MAX = 0x3f,
   EMERGENCY_DLOAD = 0xFF,
@@ -108,5 +156,9 @@ PreparePlatformHardware (EFI_KERNEL_PROTOCOL *KernIntf, VOID *KernelLoadAddr,
 VOID
 RebootDevice (UINT8 RebootReason);
 VOID ShutdownDevice (VOID);
+
+#ifdef ASUS_BUILD
+VOID ASUS_ShutdownDevice(); // +++ ASUS_BSP : add for adb reboot shutdown
+#endif
 
 #endif

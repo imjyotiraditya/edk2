@@ -30,20 +30,18 @@
 #define DDRDETAILS_H
 
 #define MAX_IDX_CH 8
-#ifndef MAX_DDR_REGIONS
-#define MAX_DDR_REGIONS   4
-#endif
+#define MAX_DDR_REGIONS   6
 #define MAX_SHUB_ENTRIES   8
 
-#define DDR_DETAILS_STRUCT_VERSION 0x0000000000070000
+#define DDR_DETAILS_STRUCT_VERSION 0x0000000000050000
 
 #define DDR_REGIONS_ENTRY_SMEM_OFFSET sizeof(ddr_details_entry)
 #define SHUB_FREQ_PLAN_ENTRY_SMEM_OFFSET \
         (DDR_REGIONS_ENTRY_SMEM_OFFSET + sizeof(DDR_REGIONS_ENTRY))
-#define DDR_MISC_INFO_SMEM_DATA_OFFSET \
+#define XBL_TO_QUANTUM_SMEM_DATA_OFFSET \
         (SHUB_FREQ_PLAN_ENTRY_SMEM_OFFSET + sizeof(shub_freq_plan_entry))
 #define DDR_INFO_SMEM_END \
-        (DDR_MISC_INFO_SMEM_DATA_OFFSET + sizeof(ddr_misc_info))
+        (XBL_TO_QUANTUM_SMEM_DATA_OFFSET + sizeof(XBL2QUANTUM_SMEM_STRUCT))
 
 /** DDR types. */
 typedef enum
@@ -91,7 +89,6 @@ typedef struct ddr_details_entry_info {
   struct  ddr_part_details ddr_params[MAX_IDX_CH];
   ddr_freq_plan_entry     ddr_freq_tbl;
   UINT8   num_channels;
-  UINT8   sct_config;
 } ddr_details_entry;
 
 typedef struct
@@ -129,9 +126,10 @@ typedef struct shub_freq_plan_entry_info
   struct shub_freq_table shub_freq[MAX_SHUB_ENTRIES];
 } shub_freq_plan_entry;
 
-typedef struct _ddr_misc_info
+typedef struct _xbl2quantum_smem_struct
 {
-  UINT32 dsf_version;
+  UINT32* ssr_cookie_addr;
   UINT32 reserved[10];
-}ddr_misc_info;
+}XBL2QUANTUM_SMEM_STRUCT;
+
 #endif /* DDRDETAILS_H */

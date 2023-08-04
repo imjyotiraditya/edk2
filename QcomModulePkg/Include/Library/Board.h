@@ -68,6 +68,7 @@
 
 #include <Uefi.h>
 #include <Library/DebugLib.h>
+#include <Library/Debug.h>
 #include <Library/MemoryAllocationLib.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiLib.h>
@@ -141,7 +142,6 @@ EFIChipInfoFoundryIdType BoardPlatformFoundryId (VOID);
 EFI_PLATFORMINFO_PLATFORM_TYPE BoardPlatformType (VOID);
 UINT32 BoardPlatformVersion (VOID);
 UINT32 BoardPlatformSubType (VOID);
-UINT32 BoardOEMVariantId (VOID);
 UINT32 BoardTargetId (VOID);
 VOID
 GetRootDeviceType (CHAR8 *StrDeviceType, UINT32 Len);
@@ -160,4 +160,9 @@ VOID GetPageSize (UINT32 *PageSize);
 EFI_STATUS GetDdrSize (UINT64 *DdrSize);
 EFI_STATUS BoardDdrType (UINT32 *Type);
 UINT32 BoardPlatformHlosSubType (VOID);
+
+#ifdef ASUS_BUILD
+EFI_STATUS GetSerialNum(UINT32 *StrSerialNum);// +++ ASUS_BSP : add for ASUS dongle unlock
+#endif
+
 #endif

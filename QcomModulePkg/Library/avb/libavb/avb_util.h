@@ -22,6 +22,42 @@
  * SOFTWARE.
  */
 
+/*
+ * Changes from Qualcomm Innovation Center are provided under the following license:
+ *
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ *
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted (subject to the limitations in the
+ *  disclaimer below) provided that the following conditions are met:
+ *
+ *      * Redistributions of source code must retain the above copyright
+ *        notice, this list of conditions and the following disclaimer.
+ *
+ *      * Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and/or other materials provided
+ *        with the distribution.
+ *
+ *      * Neither the name of Qualcomm Innovation Center, Inc. nor the names of its
+ *        contributors may be used to endorse or promote products derived
+ *        from this software without specific prior written permission.
+ *
+ *  NO EXPRESS OR IMPLIED LICENSES TO ANY PARTY'S PATENT RIGHTS ARE
+ *  GRANTED BY THIS LICENSE. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT
+ *  HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED
+ *   WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+ *  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ *  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ *  ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ *  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+ *  GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ *  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+ *  IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+ *  OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
+ *  IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #if !defined(AVB_INSIDE_LIBAVB_H) && !defined(AVB_COMPILATION)
 #error "Never include this file directly, include libavb.h instead."
 #endif
@@ -32,6 +68,7 @@
 #include "avb_sysdeps.h"
 #include "VerifiedBoot.h"
 #include <Library/DebugLib.h>
+#include <Library/Debug.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -155,11 +192,17 @@ extern "C" {
     avb_abort();                        \
   } while (0)
 
+/* Converts a 16-bit unsigned integer from big-endian to host byte order. */
+uint16_t avb_be16toh(uint16_t in) AVB_ATTR_WARN_UNUSED_RESULT;
+
 /* Converts a 32-bit unsigned integer from big-endian to host byte order. */
 uint32_t avb_be32toh(uint32_t in) AVB_ATTR_WARN_UNUSED_RESULT;
 
 /* Converts a 64-bit unsigned integer from big-endian to host byte order. */
 uint64_t avb_be64toh(uint64_t in) AVB_ATTR_WARN_UNUSED_RESULT;
+
+/* Converts a 16-bit unsigned integer from host to big-endian byte order. */
+uint16_t avb_htobe16(uint16_t in) AVB_ATTR_WARN_UNUSED_RESULT;
 
 /* Converts a 32-bit unsigned integer from host to big-endian byte order. */
 uint32_t avb_htobe32(uint32_t in) AVB_ATTR_WARN_UNUSED_RESULT;
@@ -279,9 +322,31 @@ uint32_t avb_crc32(const uint8_t* buf, size_t buf_size);
  */
 const char* avb_basename(const char* str);
 
+/* Converts any ascii lowercase characters in |str| to uppercase in-place.
+ * |str| must be NUL-terminated and valid UTF-8.
+ */
+void avb_uppercase(char* str);
+
+/* Converts |data_len| bytes of |data| to hex and returns the result. Returns
+ * NULL on OOM. Caller must free the returned string with avb_free.
+ */
+char* avb_bin2hex(const uint8_t* data, size_t data_len);
+
+/* Writes |value| to |digits| in base 10 followed by a NUL byte.
+ * Returns number of characters written excluding the NUL byte.
+ */
+#define AVB_MAX_DIGITS_UINT64 32
+size_t avb_uint64_to_base10(uint64_t value, char digits[AVB_MAX_DIGITS_UINT64]);
+
 UINT32 ReadSecurityState ();
 
 EFI_STATUS IsSecureDevice (bool *is_secure);
+
+// +++ ASUS_BSP : add for check fuse with no rpmb
+#if defined ASUS_AI2205_BUILD
+EFI_STATUS IsSecureDeviceNoCheckRpmb (bool *is_secure_no_rpmb);
+#endif
+// --- ASUS_BSP : add for check fuse with no rpmb
 
 EFI_STATUS SetFuse (uint32_t FuseId);
 

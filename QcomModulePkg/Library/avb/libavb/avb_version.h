@@ -37,7 +37,7 @@ extern "C" {
 
 /* The version number of AVB - keep in sync with avbtool. */
 #define AVB_VERSION_MAJOR 1
-#define AVB_VERSION_MINOR 0
+#define AVB_VERSION_MINOR 2
 #define AVB_VERSION_SUB 0
 
 /* Returns a NUL-terminated string for the libavb version in use.  The
@@ -51,10 +51,6 @@ extern "C" {
  * field in the VBMeta struct by avbtool.
  */
 const char* avb_version_string(void);
-
-/* TODO: remove when there are no more users of AVB_{MAJOR,MINOR}_VERSION. */
-#define AVB_MAJOR_VERSION AVB_VERSION_MAJOR
-#define AVB_MINOR_VERSION AVB_VERSION_MINOR
 
 #ifdef __cplusplus
 }

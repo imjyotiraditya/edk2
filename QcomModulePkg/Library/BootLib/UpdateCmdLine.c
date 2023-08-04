@@ -28,11 +28,12 @@
  * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
  * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
  * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
  **/
 /*
   * Changes from Qualcomm Innovation Center are provided under the following
   * license:
-  * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+  * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
   *
   * Redistribution and use in source and binary forms, with or without
   * modification, are permitted (subject to the limitations in the disclaimer
@@ -73,12 +74,91 @@
 #include <Protocol/EFIChipInfoTypes.h>
 #include <Protocol/EFIPmicPon.h>
 #include <Protocol/Print2.h>
-
+#include <Library/ShutdownServices.h>
 #include "AutoGen.h"
 #include <DeviceInfo.h>
 #include "UpdateCmdLine.h"
 #include "Recovery.h"
 #include "LECmdLine.h"
+#include "EarlyEthernet.h"
+
+#ifdef ASUS_BUILD
+#include "abl.h"
+#include "LinuxLoaderLib.h"
+#include <Protocol/EFIPmicGpio.h>
+#include <Protocol/EFITlmm.h>
+
+/***** ASUS_CMDLINE *****/
+// +++ ASUS_BSP : add for ftm mode
+extern char cmd_enable_adb_mode[64];
+extern char cmd_enable_adb_prop[64];
+extern char cmd_ftm_mode[64];
+extern char cmd_ftm_mode_prop[64];
+extern char cmd_selinux[64];
+extern char cmd_selinux_prop[64];
+//+++ ASUS_BSP : add for ASUS ID value
+extern char cmd_asus_hwid[64];
+
+extern char cmd_soc_id[64];
+extern char cmd_prj_id[64];
+extern char cmd_stage_id[64];
+extern char cmd_sku_id[64];
+extern char cmd_rf_id[64];
+extern char cmd_fp_id[64];
+extern char cmd_ddr_id[64];
+extern char cmd_feature_id[64];
+extern char cmd_jtag_id[64];
+extern char cmd_pcb_id[64];
+extern char cmd_nfc_id[64];
+extern char cmd_lgf_con_id[64];
+extern char cmd_fc_id[64];
+extern char cmd_upper_id[64];
+extern char cmd_sub_id[64];
+extern char cmd_valid_image[64];
+// +++ ASUS_BPS : add for read country code
+extern char cmd_country_code[64];
+extern char cmd_product_name[64];
+// +++ ASUS_BSP : add for boot count
+extern char cmd_boot_count[64];
+// +++ ASUS_BSP : check if have rawdump partition or not
+extern char cmd_rawdump_en[32];
+// +++ ASUS_BSP : add for reboot reason
+extern char cmd_asus_info[64];
+extern char cmd_authorized_prop[64];
+extern char cmd_unlock[16];
+// +++ ASUS_BSP : add for WaterMask unlock
+extern char cmd_watermask_unlock[16];
+extern char cmd_watermask_unlock_prop[64];
+extern char cmd_update_cmdline[64];
+extern char cmd_cpuid_hash[64];
+extern char cmd_toolid[64];
+// +++ ASUS_BSP : add for fuse blow
+extern char cmd_fuse_Info[16];
+extern char cmd_fuse_prop[64];
+// +++ ASUS_BSP : add for logcat-asdf sevices
+extern char cmd_enable_logcat_asdf[64];
+// +++ ASUS_BSP : add for check fuse with no rpmb
+extern char cmd_fuse_no_rpmb_Info[16];
+extern char cmd_fuse_no_rpmb_prop[64];
+// +++ ASUS_BSP : add for check factory crc
+extern char cmd_factory_crc[64];
+extern char cmd_retry_count[64];
+// +++ ASUS_BSP : add for ddr info
+//extern char cmd_ddr_manufacturer[64];
+//extern char cmd_ddr_device_type[64];
+// +++ ASUS_BSP : add for panel uid
+extern char cmd_unique_id[64];
+extern char cmd_lgf_id[64];
+extern char cmd_uart_status[64];
+// +++ ASUS_BSP : add for NFC check hardware sku
+extern char cmd_hardware_sku_prop[64];
+extern BOOLEAN adb_enter_shipping_mode;
+
+STATIC CONST CHAR8 *RecoveryMode = " androidboot.mode=recovery";
+STATIC CONST CHAR8 *ShippingMode = " androidboot.shippingmode=1";
+STATIC CONST CHAR8 *bootreason_panic = " androidboot.bootreason=kernel_panic";
+STATIC CONST CHAR8 *cmd_boot_reason = NULL;
+#endif
 
 #define SIZE_OF_DELIM 2
 #define PARAM_DELIM "\n"
@@ -91,7 +171,6 @@
                          CmdLineL += ParamLen; \
                        }\
                      } while (0);
-#define GB (1024UL * 1024UL * 1024UL)
 STATIC CONST CHAR8 *DynamicBootDeviceCmdLine =
                                       " androidboot.boot_devices=soc/";
 STATIC CONST CHAR8 *BootDeviceCmdLine = " androidboot.bootdevice=";
@@ -101,9 +180,7 @@ STATIC CONST CHAR8 *AndroidBootMode = " androidboot.mode=";
 STATIC CONST CHAR8 *LogLevel = " quite";
 STATIC CONST CHAR8 *BatteryChgPause = " androidboot.mode=charger";
 STATIC CONST CHAR8 *MdtpActiveFlag = " mdtp";
-STATIC CONST CHAR8 *PartActiveBoot = " part.activeboot=boot";
 STATIC CONST CHAR8 *AlarmBootCmdLine = " androidboot.alarmboot=true";
-STATIC CHAR8 SystemdSlotEnv[] = " systemd.setenv=\"SLOT_SUFFIX=_a\"";
 STATIC CONST CHAR8 *NoPasr = " mem_offline.nopasr=1";
 
 /*Send slot suffix in cmdline with which we have booted*/
@@ -112,24 +189,78 @@ STATIC CHAR8 *RootCmdLine = " rootwait ro init=";
 STATIC CHAR8 *InitCmdline = INIT_BIN;
 STATIC CHAR8 *SkipRamFs = " skip_initramfs";
 
+STATIC CHAR8 IPv4AddrBufCmdLine[MAX_IP_ADDR_BUF];
+STATIC CHAR8 IPv6AddrBufCmdLine[MAX_IP_ADDR_BUF];
+STATIC CHAR8 MacEthAddrBufCmdLine[MAX_IP_ADDR_BUF];
+STATIC CHAR8 *ResumeCmdLine = NULL;
+
 /* Display command line related structures */
 #define MAX_DISPLAY_CMD_LINE 256
 STATIC CHAR8 DisplayCmdLine[MAX_DISPLAY_CMD_LINE];
 STATIC UINTN DisplayCmdLineLen = sizeof (DisplayCmdLine);
 
+#define MAX_HW_FENCE_CMD_LINE 32
+STATIC CHAR8 HwFenceCmdLine[MAX_HW_FENCE_CMD_LINE];
+STATIC UINTN HwFenceCmdLineLen = sizeof (HwFenceCmdLine);
+
 #define MAX_DTBO_IDX_STR 64
-#define MAX_DDR_SUFFIX 10
-#define MAX_FSTAB_SUFFIX 17
 STATIC CHAR8 *AndroidBootDtboIdx = " androidboot.dtbo_idx=";
 STATIC CHAR8 *AndroidBootDtbIdx = " androidboot.dtb_idx=";
 
-STATIC CHAR8 *AndroidBootForceNormalBoot =
-                                      " androidboot.force_normal_boot=";
-CHAR8 BootForceNormalBoot = '0';
+STATIC CONST CHAR8 *AndroidBootForceNormalBoot =
+                                      " androidboot.force_normal_boot=1";
 STATIC CONST CHAR8 *AndroidBootFstabSuffix =
                                       " androidboot.fstab_suffix=";
-STATIC CHAR8 FstabSuffixEmmc[MAX_FSTAB_SUFFIX] = "emmc";
-STATIC CHAR8 FstabSuffixDefault[MAX_FSTAB_SUFFIX] = "default";
+STATIC CHAR8 *FstabSuffixEmmc = "emmc";
+STATIC CHAR8 *FstabSuffixDefault = "default";
+
+#ifdef ASUS_AI2205_BUILD
+BOOLEAN EnterChargingMode = 0;
+#endif
+
+STATIC EFI_STATUS
+GetBootReasonForCmdline (VOID){
+  EFI_STATUS Status = EFI_SUCCESS;
+  EFI_PM_PON_REASON_TYPE PONReason;
+  EFI_QCOM_PMIC_PON_PROTOCOL *PmicPonProtocol;
+  //EFI_QCOM_PMIC_GPIO_PROTOCOL *PmicGpioProtocol;
+  BOOLEAN WarmRtStatus;
+  extern UINT32 reboot_reason;
+
+  Status = gBS->LocateProtocol (&gQcomPmicPonProtocolGuid, NULL,
+                                (VOID **)&PmicPonProtocol);
+  if (EFI_ERROR (Status)) {
+      DEBUG ((EFI_D_ERROR, "Error locating pmic pon protocol: %r\n", Status));
+      return Status;
+  }
+
+  SetMem (&PONReason, sizeof(EFI_PM_PON_REASON_TYPE), 0x00);
+
+  /* Passing 0 for PMIC device Index since the protocol infers internally */
+  Status = PmicPonProtocol->GetPonReason (0, &PONReason);
+  if (EFI_ERROR (Status)) {
+      DEBUG ((EFI_D_ERROR, "Error getting pon reason: %r\n", Status));
+      return Status;
+  }
+
+  Status = PmicPonProtocol->WarmResetStatus (0, &WarmRtStatus);
+  if (EFI_ERROR (Status)) {
+      DEBUG ((EFI_D_ERROR, "Error getting warm reset status: %r\n", Status));
+      return Status;
+  }
+
+  DEBUG ((EFI_D_INFO, " PON Reason is 0x%x, %a boot, Reset Reason is 0x%x\n",
+          PONReason, WarmRtStatus ? "warm" : "cold", reboot_reason));
+
+  if (reboot_reason == PANIC_REBOOT)
+    cmd_boot_reason = bootreason_panic;
+
+  if (cmd_boot_reason)
+      DEBUG ((EFI_D_INFO, "[ABL] bootreason: %a\n", cmd_boot_reason));
+
+  return Status;
+}
+
 
 /* Memory offline arguments */
 STATIC CHAR8 *MemOff = " mem=";
@@ -147,6 +278,23 @@ TargetPauseForBatteryCharge (BOOLEAN *BatteryStatus)
   BOOLEAN ChgPresent;
   BOOLEAN WarmRtStatus;
   BOOLEAN IsColdBoot;
+//ASUS_BSP +++ boot to COS mode in low voltage
+#if defined  ASUS_AI2205_BUILD 
+  UINT32 BatteryVoltage = 0;
+  EFI_TLMM_PROTOCOL *TLMMProtocol;
+  UINT32 BTM_OVP_Val = 1;
+  UINT32 config = 0;
+#endif
+//ASUS_BSP --- boot to COS mode in low voltage
+
+#if defined  ASUS_AI2205_BUILD 
+  //Enter COS if user enter "adb reboot EnterShippingMode"
+  if(adb_enter_shipping_mode){
+	DEBUG((EFI_D_ERROR, "[ABL] adb command trigger shipping mode, boot to cos\n"));
+	*BatteryStatus = 1;
+	return Status;
+  }
+#endif
 
   /* Determines whether to pause for batter charge,
    * Serves only performance purposes, defaults to return zero*/
@@ -161,6 +309,44 @@ TargetPauseForBatteryCharge (BOOLEAN *BatteryStatus)
     DEBUG ((EFI_D_ERROR, "Error finding charger protocol: %r\n", Status));
     return Status;
   }
+
+//ASUS_BSP +++ boot to COS mode in low voltage
+#if defined  ASUS_AI2205_BUILD
+/* Get battery voltage/capacity & CHG_present +++ */
+  Status = ChgDetectProtocol->GetBatteryVoltage (&BatteryVoltage);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((EFI_D_ERROR, "Error getting charger info battery voltage: %r\n", Status));
+    return Status;
+  }
+  DEBUG((EFI_D_ERROR, "[ABL] Battery Voltage = %d\n", BatteryVoltage));
+
+  Status = ChgDetectProtocol->GetChargerPresence (&ChgPresent);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((EFI_D_ERROR, "Error getting charger info: %r\n", Status));
+    return Status;
+  }
+  DEBUG((EFI_D_ERROR, "[ABL] ChgPresent = %d\n", ChgPresent));
+
+  Status = gBS->LocateProtocol( &gEfiTLMMProtocolGuid, NULL, (void**)&TLMMProtocol);
+  if (EFI_ERROR(Status)) {
+    DEBUG((EFI_D_ERROR, "[ABL] TargetPauseForBatteryCharge : Locate TLMMProtocol protocol failed! %r\n", Status));
+    return Status;
+  }
+  config = EFI_GPIO_CFG(85, 0, GPIO_INPUT, GPIO_NO_PULL, GPIO_16MA);
+  Status = TLMMProtocol->GpioIn(config, &BTM_OVP_Val);
+  if (EFI_ERROR(Status)) {
+    DEBUG((EFI_D_ERROR, "Error getting TLMMProtocol->GpioIn: %r\n", Status));
+  }
+  DEBUG((EFI_D_ERROR, "[ABL] BTM_OVP_Val = %d\n", BTM_OVP_Val));
+
+  if ((ChgPresent || !BTM_OVP_Val) && (BatteryVoltage <= 7000)) {
+    *BatteryStatus = 1;
+    DEBUG((EFI_D_ERROR, "[ABL] Battery Voltage <= 7000, boot to COS\n"));
+    return Status;
+  }
+#endif
+/* Get battery voltage/capacity & CHG_present --- */
+//ASUS_BSP --- boot to COS mode in low voltage
 
   /* The new protocol are supported on future chipsets */
   if (ChgDetectProtocol->Revision >= CHARGER_EX_REVISION) {
@@ -350,11 +536,24 @@ STATIC VOID GetDisplayCmdline (VOID)
   }
 }
 
+STATIC VOID GetHwFenceCmdline (VOID)
+{
+  EFI_STATUS Status;
+
+  Status = gRT->GetVariable ((CHAR16 *)L"HwFenceConfiguration",
+                             &gQcomTokenSpaceGuid, NULL, &HwFenceCmdLineLen,
+                             HwFenceCmdLine);
+  if (Status != EFI_SUCCESS) {
+    DEBUG ((EFI_D_ERROR, "Unable to get hw fence Config, %r\n", Status));
+  }
+}
+
 /*
  * Returns length = 0 when there is failure.
  */
 UINT32
-GetSystemPath (CHAR8 **SysPath, BootInfo *Info)
+GetSystemPath (CHAR8 **SysPath, BOOLEAN MultiSlotBoot, BOOLEAN BootIntoRecovery,
+                CHAR16 *ReqPartition, CHAR8 *Key, BOOLEAN FlashlessBoot)
 {
   INT32 Index;
   UINT32 Lun;
@@ -369,17 +568,31 @@ GetSystemPath (CHAR8 **SysPath, BootInfo *Info)
     return 0;
   }
 
+  if (FlashlessBoot) {
+     AsciiSPrint (*SysPath, MAX_PATH_SIZE,
+                     " rootfstype=squashfs root=/dev/ram0");
+     return AsciiStrLen (*SysPath);
+  }
+
+  if (ReqPartition == NULL ||
+      Key == NULL) {
+    DEBUG ((EFI_D_ERROR, "Invalid parameters: NULL\n"));
+    FreePool (*SysPath);
+    *SysPath = NULL;
+    return 0;
+  }
+
   if (IsLEVariant () &&
-      Info->BootIntoRecovery) {
+      BootIntoRecovery) {
     StrnCpyS (PartitionName, MAX_GPT_NAME_SIZE, (CONST CHAR16 *)L"recoveryfs",
             StrLen ((CONST CHAR16 *)L"recoveryfs"));
   } else {
-    StrnCpyS (PartitionName, MAX_GPT_NAME_SIZE, (CONST CHAR16 *)L"system",
-            StrLen ((CONST CHAR16 *)L"system"));
+    StrnCpyS (PartitionName, MAX_GPT_NAME_SIZE, ReqPartition,
+            StrLen (ReqPartition));
   }
 
   /* Append slot info for A/B Variant */
-  if (Info->MultiSlotBoot &&
+  if (MultiSlotBoot &&
       NAND != CheckRootDeviceType ()) {
      StrnCatS (PartitionName, MAX_GPT_NAME_SIZE, CurSlot.Suffix,
             StrLen (CurSlot.Suffix));
@@ -402,7 +615,7 @@ GetSystemPath (CHAR8 **SysPath, BootInfo *Info)
   }
 
   if (!AsciiStrCmp ("EMMC", RootDevStr)) {
-    AsciiSPrint (*SysPath, MAX_PATH_SIZE, " root=/dev/mmcblk0p%d", Index);
+    AsciiSPrint (*SysPath, MAX_PATH_SIZE, " %a=/dev/mmcblk0p%d", Key, Index);
   } else if (!AsciiStrCmp ("NAND", RootDevStr)) {
     /* NAND is being treated as GPT partition, hence reduce the index by 1 as
      * PartitionIndex (0) should be ignored for correct mapping of partition.
@@ -413,7 +626,7 @@ GetSystemPath (CHAR8 **SysPath, BootInfo *Info)
       UINT32 PartitionCount = 0;
       UINT32 MtdBlkIndex = 0;
       GetPartitionCount (&PartitionCount);
-      if (Info->MultiSlotBoot &&
+      if (MultiSlotBoot &&
          (StrnCmp ((CONST CHAR16 *)L"_b", CurSlot.Suffix,
           StrLen (CurSlot.Suffix)) == 0))
          MtdBlkIndex = PartitionCount;
@@ -423,27 +636,13 @@ GetSystemPath (CHAR8 **SysPath, BootInfo *Info)
                    " rootfstype=squashfs root=/dev/mtdblock%d ubi.mtd=%d",
                    MtdBlkIndex, (Index - 1));
     } else {
-      if (IsLEVerity () &&
-          !Info->BootIntoRecovery &&
-          IsLEVerityUseExt4Gluebi ()) {
-        AsciiSPrint (*SysPath, MAX_PATH_SIZE,
-            " rootfstype=ext4 ubi.mtd=%d ubi.block=0,0 root=/dev/dm-0",
-            (Index - 1));
-      } else {
-        Slot CurSlot = GetCurrentSlotSuffix ();
-        if (Info->MultiSlotBoot) {
-          AsciiSPrint (*SysPath, MAX_PATH_SIZE,
-          " rootfstype=ubifs rootflags=bulk_read root=ubi0:rootfs%s ubi.mtd=%d",
-                 CurSlot.Suffix, (Index - 1));
-        } else {
-          AsciiSPrint (*SysPath, MAX_PATH_SIZE,
+      AsciiSPrint (*SysPath, MAX_PATH_SIZE,
           " rootfstype=ubifs rootflags=bulk_read root=ubi0:rootfs ubi.mtd=%d",
-                 (Index - 1));
-        }
-      }
+          (Index - 1));
     }
   } else if (!AsciiStrCmp ("UFS", RootDevStr)) {
-    AsciiSPrint (*SysPath, MAX_PATH_SIZE, " root=/dev/sd%c%d",
+    AsciiSPrint (*SysPath, MAX_PATH_SIZE, " %a=/dev/sd%c%d",
+                 Key,
                  LunCharMapping[Lun],
                  GetPartitionIdxInLun (PartitionName, Lun));
   } else {
@@ -455,6 +654,22 @@ GetSystemPath (CHAR8 **SysPath, BootInfo *Info)
   DEBUG ((EFI_D_VERBOSE, "System Path - %a \n", *SysPath));
 
   return AsciiStrLen (*SysPath);
+}
+
+UINT32
+GetResumeCmdLine (CHAR8 **ResumeCmdLine, CHAR16 *ReqPartition)
+{
+  BOOLEAN MultiSlotBoot;
+  UINT32 Len = 0;
+
+  MultiSlotBoot = PartitionHasMultiSlot ((CONST CHAR16 *)L"swap_a");
+  Len = GetSystemPath (ResumeCmdLine, MultiSlotBoot, FALSE,
+                (CHAR16 *)L"swap_a", (CHAR8 *)"resume", FALSE);
+  if (Len == 0) {
+     DEBUG ((EFI_D_ERROR, "GetSystemPath failed\n"));
+     return 0;
+  }
+  return Len;
 }
 
 STATIC
@@ -515,8 +730,8 @@ Unsupported:
 
 STATIC
 EFI_STATUS
-UpdateCmdLineParams (UpdateCmdLineParamList *Param,
-                     CHAR8 **FinalCmdLine)
+UpdateCmdLineParams (UpdateCmdLineParamList *Param, CHAR8 **FinalCmdLine,
+                     BootParamlist *BootParamlistPtr)
 {
   CONST CHAR8 *Src;
   CHAR8 *Dst;
@@ -626,57 +841,40 @@ UpdateCmdLineParams (UpdateCmdLineParamList *Param,
   Src = Param->DisplayCmdLine;
   AsciiStrCatS (Dst, MaxCmdLineLen, Src);
 
+  Src = Param->HwFenceCmdLine;
+  AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
   if (Param->MdtpActive) {
     Src = Param->MdtpActiveFlag;
     AsciiStrCatS (Dst, MaxCmdLineLen, Src);
   }
 
-  if (NAND == CheckRootDeviceType ()) {
-    Src = PartActiveBoot;
-    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
-    if (Param->MultiSlotBoot) {
-      Slot CurSlot = GetCurrentSlotSuffix ();
-      char CurSlotSuffix[sizeof (CurSlot.Suffix)];
-      AsciiSPrint (CurSlotSuffix, sizeof (CurSlot.Suffix),
-                       "%s", CurSlot.Suffix);
-      AsciiStrCatS (Dst, MaxCmdLineLen, CurSlotSuffix);
-    }
-  }
-
   if (Param->MultiSlotBoot &&
      !IsBootDevImage ()) {
+     /* Slot suffix */
+    if (Param->HeaderVersion <= BOOT_HEADER_VERSION_THREE) {
+      Src = Param->AndroidSlotSuffix;
+      AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+    }
+
     UnicodeStrToAsciiStr (GetCurrentSlotSuffix ().Suffix,
-                        Param->SlotSuffixAscii);
-    if (IsLEVariant ()) {
-      INT32 StrLen = 0;
-      StrLen = AsciiStrLen (SystemdSlotEnv);
-      SystemdSlotEnv[StrLen - 2] = Param->SlotSuffixAscii[1];
-      Src = Param->SystemdSlotEnv;
+                          Param->SlotSuffixAscii);
+    if (Param->HeaderVersion <= BOOT_HEADER_VERSION_THREE) {
+      Src = Param->SlotSuffixAscii;
       AsciiStrCatS (Dst, MaxCmdLineLen, Src);
     } else {
-     /* Slot suffix */
-      if (Param->HeaderVersion <= BOOT_HEADER_VERSION_THREE) {
-        Src = Param->AndroidSlotSuffix;
-        AsciiStrCatS (Dst, MaxCmdLineLen, Src);
-      }
-
-      if (Param->HeaderVersion <= BOOT_HEADER_VERSION_THREE) {
-        Src = Param->SlotSuffixAscii;
-        AsciiStrCatS (Dst, MaxCmdLineLen, Src);
-      } else {
-        BootConfigFlag = IsAndroidBootParam (Param->AndroidSlotSuffix,
-                            AsciiStrLen (Param->AndroidSlotSuffix),
-                                      Param->HeaderVersion);
-        AddtoBootConfigList (BootConfigFlag, Param->AndroidSlotSuffix,
-                   Param->SlotSuffixAscii,
+      BootConfigFlag = IsAndroidBootParam (Param->AndroidSlotSuffix,
+                              AsciiStrLen (Param->AndroidSlotSuffix),
+                                       Param->HeaderVersion);
+      AddtoBootConfigList (BootConfigFlag, Param->AndroidSlotSuffix,
+                     Param->SlotSuffixAscii,
                      BootConfigListHead,
                      AsciiStrLen (Param->AndroidSlotSuffix),
                      AsciiStrLen (Param->SlotSuffixAscii));
-      }
     }
   }
 
-  if ((IsBuildAsSystemRootImage () &&
+  if ((IsBuildAsSystemRootImage (BootParamlistPtr) &&
       !Param->MultiSlotBoot) ||
       (Param->MultiSlotBoot &&
       !IsBootDevImage ())) {
@@ -715,13 +913,8 @@ UpdateCmdLineParams (UpdateCmdLineParamList *Param,
       !Param->Recovery) ||
       (!Param->MultiSlotBoot &&
        !IsBuildUseRecoveryAsBoot ())) {
-    if (Param->HeaderVersion < BOOT_HEADER_VERSION_THREE) {
-      BootForceNormalBoot = '1';
-    }
     if (Param->HeaderVersion <= BOOT_HEADER_VERSION_THREE) {
       Src = AndroidBootForceNormalBoot;
-      AsciiStrCatS (Dst, MaxCmdLineLen, Src);
-      Src = &BootForceNormalBoot;
       AsciiStrCatS (Dst, MaxCmdLineLen, Src);
     }
   }
@@ -746,6 +939,208 @@ UpdateCmdLineParams (UpdateCmdLineParamList *Param,
     Src = Param->NoPasr;
     AsciiStrCatS (Dst, MaxCmdLineLen, Src);
   }
+
+  if (EarlyEthEnabled ()) {
+    Src = Param->EarlyIPv4CmdLine;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+    Src = Param->EarlyIPv6CmdLine;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+    Src = Param->EarlyEthMacCmdLine;
+  }
+
+  if (IsHibernationEnabled ()) {
+    Src = Param->ResumeCmdLine;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+  }
+
+#ifdef ASUS_BUILD
+
+  if (Param->Recovery){
+    Src = Param->RecoveryMode;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+  }
+
+  // +++ ASUS_BSP : add for logcat-asdf sevices
+  if ((Param->cmd_enable_logcat_asdf!=NULL) &&
+		(Param->HeaderVersion <= BOOT_HEADER_VERSION_THREE))
+  {
+    Src = Param->cmd_enable_logcat_asdf;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+  }
+
+  Src = Param->cmd_asus_hwid;
+  AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+  // +++ ASUS_BSP : add for ftm mode
+  Src = Param->cmd_enable_adb_mode;
+  AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+  
+  if(Param->HeaderVersion <= BOOT_HEADER_VERSION_THREE){
+    Src = Param->cmd_enable_adb_prop;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+  }
+
+  Src = Param->cmd_ftm_mode;
+  AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+  
+  if(Param->HeaderVersion <= BOOT_HEADER_VERSION_THREE){
+    Src = Param->cmd_ftm_mode_prop;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+  }
+
+  Src = Param->cmd_selinux;
+  AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+  
+  if(Param->HeaderVersion <= BOOT_HEADER_VERSION_THREE){
+    Src = Param->cmd_selinux_prop;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+  }
+
+  //+++ ASUS_BSP : add for ASUS ID value
+  if(Param->HeaderVersion <= BOOT_HEADER_VERSION_THREE){
+    Src = Param->cmd_soc_id;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+    
+    Src = Param->cmd_prj_id;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+    
+    Src = Param->cmd_stage_id;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+    Src = Param->cmd_sku_id;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+    Src = Param->cmd_rf_id;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+    Src = Param->cmd_ddr_id;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+    Src = Param->cmd_feature_id;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+    Src = Param->cmd_jtag_id;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+    Src = Param->cmd_pcb_id;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+    Src = Param->cmd_nfc_id;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+    Src = Param->cmd_fp_id;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+    Src = Param->cmd_lgf_id;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+     
+    Src = Param->cmd_lgf_con_id;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+  
+    Src = Param->cmd_fc_id;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+  
+    Src = Param->cmd_upper_id;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+  
+    Src = Param->cmd_sub_id;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+    
+    Src = Param->cmd_valid_image;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+    // +++ ASUS_BPS : add for read country code
+    Src = Param->cmd_country_code;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+    Src = Param->cmd_product_name;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+    // +++ ASUS_BSP : add for boot count
+    Src = Param->cmd_boot_count;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+    // +++ ASUS_BSP : add for reboot reason
+    Src = Param->cmd_boot_reason;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+    // +++ ASUS_BSP : check if have rawdump partition or not
+    Src = Param->cmd_rawdump_en;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src); 
+    
+    Src = Param->cmd_authorized_prop;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+    
+    Src = Param->cmd_cpuid_hash;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+    Src = Param->cmd_toolid;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+    
+    Src = Param->cmd_fuse_prop;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+    
+    Src = Param->cmd_fuse_no_rpmb_prop;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+    
+    Src = Param->cmd_hardware_sku_prop;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+    
+    // +++ ASUS_BSP : add for check factory crc
+    Src = Param->cmd_factory_crc;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+    Src = Param->cmd_retry_count;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+    // +++ ASUS_BSP : add for ddr info
+    /*
+    Src = Param->cmd_ddr_manufacturer;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+    Src = Param->cmd_ddr_device_type;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+    */
+    
+    if(IsAuthorized_3()){
+      Src = Param->cmd_watermask_unlock_prop;
+      AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+    }
+  }
+  
+  if (Param->cmd_uart_status!=NULL)
+  {
+    Src = Param->cmd_uart_status;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+  }
+
+  Src = Param->cmd_asus_info;
+  AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+  Src = Param->cmd_unlock;
+  AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+  Src = Param->cmd_update_cmdline;
+  AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+  Src = Param->cmd_fuse_Info;
+  AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+  // +++ ASUS_BSP : add for check fuse with no rpmb
+  Src = Param->cmd_fuse_no_rpmb_Info;
+  AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+  // +++ ASUS_BSP : add for panel uid
+  Src = Param->cmd_unique_id;
+  AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+
+  // +++ ASUS_BSP : add for WaterMask unlock
+  if (IsAuthorized_3())
+  {
+    Src = Param->cmd_watermask_unlock;
+    AsciiStrCatS (Dst, MaxCmdLineLen, Src);
+  }
+#endif
 
   return EFI_SUCCESS;
 }
@@ -811,12 +1206,6 @@ AddtoBootConfigList (BOOLEAN BootConfigFlag,
   NewNode = (struct BootConfigParamNode *)
                AllocateBootConfigNode (ParamKeyLen + SIZE_OF_DELIM +
                SIZE_OF_DELIM + ParamValueLen);
-  if (!NewNode) {
-    DEBUG ((EFI_D_ERROR, "Failed to add %s to bootconfig! Out of memory\n",
-            ParamKey));
-    return;
-  }
-
   gBS->CopyMem (NewNode->param, (CHAR8*)ParamKey, ParamKeyLen);
   if (ParamValue) {
     gBS->CopyMem (&NewNode->param[ParamKeyLen], (CHAR8*)ParamValue,
@@ -876,7 +1265,6 @@ UpdateBootConfigParams (LIST_ENTRY *BootConfigListHead,
   Link = GetFirstNode (BootConfigListHead);
   if (!Link) {
     DEBUG ((EFI_D_INFO, "Error in Node entry \n"));
-    return EFI_D_ERROR;
   }
 
   gBS->CopyMem (Dst, "\n", SIZE_OF_DELIM);
@@ -896,6 +1284,7 @@ UpdateBootConfigParams (LIST_ENTRY *BootConfigListHead,
   Dst[AsciiStrLen (Dst) + 1] = '\0';
   *FinalBootConfig = Dst;
   *FinalBootConfigLen = AsciiStrLen (Dst) + 1;
+
   return EFI_SUCCESS;
 }
 VOID
@@ -912,7 +1301,6 @@ ClearBootConfigList (LIST_ENTRY* BootConfigListHead)
   Link = GetFirstNode (BootConfigListHead);
   if (!Link) {
     DEBUG ((EFI_D_INFO, "Error in Node entry \n"));
-    return;
   }
 
   while (!IsNull (BootConfigListHead, Link)) {
@@ -942,16 +1330,13 @@ ClearBootConfigList (LIST_ENTRY* BootConfigListHead)
 /*Update command line: appends boot information to the original commandline
  *that is taken from boot image header*/
 EFI_STATUS
-UpdateCmdLine (CONST CHAR8 *CmdLine,
+UpdateCmdLine (BootParamlist *BootParamlistPtr,
                CHAR8 *FfbmStr,
                BOOLEAN Recovery,
+               BOOLEAN FlashlessBoot,
                BOOLEAN AlarmBoot,
                CONST CHAR8 *VBCmdLine,
-               CHAR8 **FinalCmdLine,
-               CHAR8 **FinalBootConfig,
-               UINT32 *FinalBootConfigLen,
-               UINT32 HeaderVersion,
-               VOID *fdt)
+               UINT32 HeaderVersion)
 {
   EFI_STATUS Status;
   UINT32 CmdLineLen = 0;
@@ -976,24 +1361,22 @@ UpdateCmdLine (CONST CHAR8 *CmdLine,
   CHAR8 RootDevStr[BOOT_DEV_NAME_SIZE_MAX];
   CHAR8 MemOffAmt[MEM_OFF_SIZE];
   BOOLEAN BootConfigFlag = FALSE;
-#ifdef FSTAB_DDR_SUFFIX
-  UINT64 DdrSize = 0;
-  UINT32 DdrSizeGb = 0;
-  CHAR8 DdrSuffix[MAX_DDR_SUFFIX];
-#endif
-  BootConfigListHead = (LIST_ENTRY*) AllocateZeroPool (sizeof (LIST_ENTRY));
-  if (!BootConfigListHead) {
-    DEBUG ((EFI_D_ERROR,
-            "Failed to allocate zero pool for BootConfigListHead\n"));
-    return EFI_OUT_OF_RESOURCES;
-  }
 
+  CONST CHAR8 *CmdLine = BootParamlistPtr->CmdLine;
+  CHAR8 **FinalCmdLine = &BootParamlistPtr->FinalCmdLine;
+  CHAR8 **FinalBootConfig = &BootParamlistPtr->FinalBootConfig;
+  UINT32 *FinalBootConfigLen = &BootParamlistPtr->FinalBootConfigLen;
+  VOID *fdt = (VOID *)BootParamlistPtr->DeviceTreeLoadAddr;
+
+  BootConfigListHead = (LIST_ENTRY*) AllocateZeroPool (sizeof (LIST_ENTRY));
   InitializeListHead (BootConfigListHead);
 
-  Status = BoardSerialNum (StrSerialNum, sizeof (StrSerialNum));
-  if (Status != EFI_SUCCESS) {
-    DEBUG ((EFI_D_ERROR, "Error Finding board serial num: %x\n", Status));
-    return Status;
+  if (!FlashlessBoot) {
+    Status = BoardSerialNum (StrSerialNum, sizeof (StrSerialNum));
+    if (Status != EFI_SUCCESS) {
+      DEBUG ((EFI_D_ERROR, "Error Finding board serial num: %x\n", Status));
+      return Status;
+    }
   }
 
   if (CmdLine && CmdLine[0]) {
@@ -1023,8 +1406,7 @@ UpdateCmdLine (CONST CHAR8 *CmdLine,
   }
 
   if (HaveCmdLine) {
-    if (IsLEVerity () &&
-        !Recovery) {
+    if (IsLEVerity ()) {
       Status = GetLEVerityCmdLine (CmdLine, &LEVerityCmdLine,
                                    &LEVerityCmdLineLen);
       if (Status != EFI_SUCCESS) {
@@ -1078,6 +1460,7 @@ UpdateCmdLine (CONST CHAR8 *CmdLine,
   ADD_PARAM_LEN (BootConfigFlag, AsciiStrLen (StrSerialNum), CmdLineLen,
                                        BootConfigLen);
 
+  GetBootReasonForCmdline();
   /* Ignore the EFI_STATUS return value as the default Battery Status = 0 and is
    * not fatal */
   TargetPauseForBatteryCharge (&BatteryStatus);
@@ -1105,6 +1488,9 @@ UpdateCmdLine (CONST CHAR8 *CmdLine,
              !Recovery) {
     DEBUG ((EFI_D_INFO, "Device will boot into off mode charging mode\n"));
     PauseAtBootUp = 1;
+#ifdef ASUS_AI2205_BUILD
+    EnterChargingMode = 1;
+#endif
     ParamLen = AsciiStrLen (BatteryChgPause);
     BootConfigFlag = IsAndroidBootParam (BatteryChgPause,
                                 ParamLen, HeaderVersion);
@@ -1112,6 +1498,16 @@ UpdateCmdLine (CONST CHAR8 *CmdLine,
                                          BootConfigLen);
     AddtoBootConfigList (BootConfigFlag, BatteryChgPause, NULL,
                       BootConfigListHead, ParamLen, 0);
+                      
+    if(adb_enter_shipping_mode){
+      ParamLen = AsciiStrLen (ShippingMode);
+      BootConfigFlag = IsAndroidBootParam (ShippingMode,
+                                ParamLen, HeaderVersion);
+      ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen,
+                                         BootConfigLen);
+      AddtoBootConfigList (BootConfigFlag, ShippingMode, NULL,
+                      BootConfigListHead, ParamLen, 0);
+    }
   } else if (AlarmBoot) {
     ParamLen = AsciiStrLen (AlarmBootCmdLine);
     BootConfigFlag = IsAndroidBootParam (AlarmBootCmdLine,
@@ -1153,39 +1549,15 @@ UpdateCmdLine (CONST CHAR8 *CmdLine,
   MultiSlotBoot = PartitionHasMultiSlot ((CONST CHAR16 *)L"boot");
   if (MultiSlotBoot &&
      !IsBootDevImage ()) {
-    if (IsLEVariant ()) {
-      ParamLen = AsciiStrLen (SystemdSlotEnv);
-      BootConfigFlag = IsAndroidBootParam (SystemdSlotEnv,
-                                    ParamLen, HeaderVersion);
-      ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
-      AddtoBootConfigList (BootConfigFlag, SystemdSlotEnv, NULL,
-                                BootConfigListHead, ParamLen, 0);
-    } else {
     /* Add additional length for slot suffix */
-      ParamLen = AsciiStrLen (AndroidSlotSuffix) + MAX_SLOT_SUFFIX_SZ;
-      BootConfigFlag = IsAndroidBootParam (AndroidSlotSuffix,
+    ParamLen = AsciiStrLen (AndroidSlotSuffix) + MAX_SLOT_SUFFIX_SZ;
+    BootConfigFlag = IsAndroidBootParam (AndroidSlotSuffix,
                                ParamLen, HeaderVersion);
-      ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen,
-                                         BootConfigLen);
-    }
-  }
-
-  if (NAND == CheckRootDeviceType ()) {
-    if (MultiSlotBoot) {
-      /* Add additional length for slot suffix */
-      ParamLen = AsciiStrLen (PartActiveBoot) + MAX_SLOT_SUFFIX_SZ;
-    } else {
-      ParamLen = AsciiStrLen (PartActiveBoot);
-    }
-    BootConfigFlag = IsAndroidBootParam (PartActiveBoot,
-                 ParamLen, HeaderVersion);
     ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen,
-                 BootConfigLen);
-    AddtoBootConfigList (BootConfigFlag, PartActiveBoot, NULL,
-                 BootConfigListHead, ParamLen, 0);
+                                         BootConfigLen);
   }
 
-  if ((IsBuildAsSystemRootImage () &&
+  if ((IsBuildAsSystemRootImage (BootParamlistPtr) &&
       !MultiSlotBoot) ||
       (MultiSlotBoot &&
       !IsBootDevImage ())) {
@@ -1225,6 +1597,15 @@ UpdateCmdLine (CONST CHAR8 *CmdLine,
   AddtoBootConfigList (BootConfigFlag, DisplayCmdLine, NULL,
                    BootConfigListHead, ParamLen, 0);
 
+  GetHwFenceCmdline ();
+  ParamLen = AsciiStrLen (HwFenceCmdLine);
+  BootConfigFlag = IsAndroidBootParam (HwFenceCmdLine,
+                             ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen,
+                                       BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, HwFenceCmdLine, NULL,
+                   BootConfigListHead, ParamLen, 0);
+
   if (!IsLEVariant ()) {
     DtboIdx = GetDtboIdx ();
     if (DtboIdx != INVALID_PTN) {
@@ -1253,29 +1634,258 @@ UpdateCmdLine (CONST CHAR8 *CmdLine,
     }
   }
 
-  if (!IsRecoveryHasNoKernel () &&
-      !Recovery) {
-    BootForceNormalBoot = '1';
-  }
-
   if (((IsBuildUseRecoveryAsBoot () ||
       IsRecoveryHasNoKernel ()) &&
       IsDynamicPartitionSupport () &&
       !Recovery) ||
       (!MultiSlotBoot &&
-       !IsBuildUseRecoveryAsBoot ())) {
+       !IsBuildUseRecoveryAsBoot ())) { 
     ParamLen = AsciiStrLen (AndroidBootForceNormalBoot);
     BootConfigFlag = IsAndroidBootParam (AndroidBootForceNormalBoot,
                                            ParamLen, HeaderVersion);
     ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen,
                                          BootConfigLen);
-    AddtoBootConfigList (BootConfigFlag, AndroidBootForceNormalBoot,
-                    &BootForceNormalBoot,
-                    BootConfigListHead, ParamLen,
-                    sizeof (BootForceNormalBoot));
-    ADD_PARAM_LEN (BootConfigFlag, sizeof (BootForceNormalBoot),
-                   CmdLineLen, BootConfigLen);
+    AddtoBootConfigList (BootConfigFlag, AndroidBootForceNormalBoot, NULL,
+                    BootConfigListHead, ParamLen, 0);
   }
+
+#ifdef ASUS_BUILD
+  // +++ ASUS_BSP : add for fuse blow
+  get_fuse_status();
+  // +++ ASUS_BSP : add for fuse blow
+
+  // +++ ASUS_BSP : add for asus unlock state
+  ASUS_Get_UNLOCK_STATE();
+  // --- ASUS_BSP : add for asus unlock state
+
+  if (Recovery) {
+    CmdLineLen += AsciiStrLen (RecoveryMode);
+  }
+
+  CmdLineLen += AsciiStrLen(cmd_asus_hwid);
+
+  // +++ ASUS_BSP : add for ftm mode
+  CmdLineLen += AsciiStrLen(cmd_enable_adb_mode);
+  CmdLineLen += AsciiStrLen(cmd_ftm_mode);
+  CmdLineLen += AsciiStrLen(cmd_selinux);
+  
+  ParamLen = AsciiStrLen (cmd_enable_adb_prop);
+  BootConfigFlag = IsAndroidBootParam (cmd_enable_adb_prop, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_enable_adb_prop, NULL, BootConfigListHead, ParamLen, 0);
+  
+  ParamLen = AsciiStrLen (cmd_ftm_mode_prop);
+  BootConfigFlag = IsAndroidBootParam (cmd_ftm_mode_prop, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_ftm_mode_prop, NULL, BootConfigListHead, ParamLen, 0);
+  
+  ParamLen = AsciiStrLen (cmd_selinux_prop);
+  BootConfigFlag = IsAndroidBootParam (cmd_selinux_prop, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_selinux_prop, NULL, BootConfigListHead, ParamLen, 0);
+  
+  ParamLen = AsciiStrLen (cmd_prj_id);
+  BootConfigFlag = IsAndroidBootParam (cmd_prj_id, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_prj_id, NULL, BootConfigListHead, ParamLen, 0);
+  
+  ParamLen = AsciiStrLen (cmd_stage_id);
+  BootConfigFlag = IsAndroidBootParam (cmd_stage_id, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_stage_id, NULL, BootConfigListHead, ParamLen, 0);
+  
+  ParamLen = AsciiStrLen (cmd_sku_id);
+  BootConfigFlag = IsAndroidBootParam (cmd_sku_id, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_sku_id, NULL, BootConfigListHead, ParamLen, 0);
+  
+  ParamLen = AsciiStrLen (cmd_rf_id);
+  BootConfigFlag = IsAndroidBootParam (cmd_rf_id, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_rf_id, NULL, BootConfigListHead, ParamLen, 0);
+  
+  ParamLen = AsciiStrLen (cmd_fp_id);
+  BootConfigFlag = IsAndroidBootParam (cmd_fp_id, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_fp_id, NULL, BootConfigListHead, ParamLen, 0);
+
+  ParamLen = AsciiStrLen (cmd_ddr_id);
+  BootConfigFlag = IsAndroidBootParam (cmd_ddr_id, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_ddr_id, NULL, BootConfigListHead, ParamLen, 0);
+  
+  ParamLen = AsciiStrLen (cmd_feature_id);
+  BootConfigFlag = IsAndroidBootParam (cmd_feature_id, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_feature_id, NULL, BootConfigListHead, ParamLen, 0);
+ 
+  ParamLen = AsciiStrLen (cmd_jtag_id);
+  BootConfigFlag = IsAndroidBootParam (cmd_jtag_id, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_jtag_id, NULL, BootConfigListHead, ParamLen, 0);
+  
+  ParamLen = AsciiStrLen (cmd_pcb_id);
+  BootConfigFlag = IsAndroidBootParam (cmd_pcb_id, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_pcb_id, NULL, BootConfigListHead, ParamLen, 0);
+  
+  ParamLen = AsciiStrLen (cmd_nfc_id);
+  BootConfigFlag = IsAndroidBootParam (cmd_nfc_id, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_nfc_id, NULL, BootConfigListHead, ParamLen, 0);
+  
+  ParamLen = AsciiStrLen (cmd_lgf_id);
+  BootConfigFlag = IsAndroidBootParam (cmd_lgf_id, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_lgf_id, NULL, BootConfigListHead, ParamLen, 0);
+
+  ParamLen = AsciiStrLen (cmd_lgf_con_id);
+  BootConfigFlag = IsAndroidBootParam (cmd_lgf_con_id, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_lgf_con_id, NULL, BootConfigListHead, ParamLen, 0);  
+  
+  ParamLen = AsciiStrLen (cmd_fc_id);
+  BootConfigFlag = IsAndroidBootParam (cmd_fc_id, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_fc_id, NULL, BootConfigListHead, ParamLen, 0);  
+  
+  ParamLen = AsciiStrLen (cmd_upper_id);
+  BootConfigFlag = IsAndroidBootParam (cmd_upper_id, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_upper_id, NULL, BootConfigListHead, ParamLen, 0);  
+  
+  ParamLen = AsciiStrLen (cmd_sub_id);
+  BootConfigFlag = IsAndroidBootParam (cmd_sub_id, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_sub_id, NULL, BootConfigListHead, ParamLen, 0);
+  
+  ParamLen = AsciiStrLen (cmd_valid_image);
+  BootConfigFlag = IsAndroidBootParam (cmd_valid_image, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_valid_image, NULL, BootConfigListHead, ParamLen, 0); 
+
+  // +++ ASUS_BPS : add for read country code
+  ParamLen = AsciiStrLen (cmd_country_code);
+  BootConfigFlag = IsAndroidBootParam (cmd_country_code, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_country_code, NULL, BootConfigListHead, ParamLen, 0);  
+
+  ParamLen = AsciiStrLen (cmd_product_name);
+  BootConfigFlag = IsAndroidBootParam (cmd_product_name, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_product_name, NULL, BootConfigListHead, ParamLen, 0);
+
+  // +++ ASUS_BSP : add for boot count
+  ParamLen = AsciiStrLen (cmd_boot_count);
+  BootConfigFlag = IsAndroidBootParam (cmd_boot_count, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_boot_count, NULL, BootConfigListHead, ParamLen, 0); 
+
+  // +++ ASUS_BSP : add for reboot reason
+  if (cmd_boot_reason)
+  {
+    ParamLen = AsciiStrLen (cmd_boot_reason);
+    BootConfigFlag = IsAndroidBootParam (cmd_boot_reason, ParamLen, HeaderVersion);
+    ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+    AddtoBootConfigList (BootConfigFlag, cmd_boot_reason, NULL, BootConfigListHead, ParamLen, 0);
+  }
+
+  // +++ ASUS_BSP : check if have rawdump partition or not
+  ParamLen = AsciiStrLen (cmd_rawdump_en);
+  BootConfigFlag = IsAndroidBootParam (cmd_rawdump_en, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_rawdump_en, NULL, BootConfigListHead, ParamLen, 0); 
+
+  CmdLineLen += AsciiStrLen(cmd_asus_info);
+  
+  ParamLen = AsciiStrLen (cmd_authorized_prop);
+  BootConfigFlag = IsAndroidBootParam (cmd_authorized_prop, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_authorized_prop, NULL, BootConfigListHead, ParamLen, 0); 
+
+  CmdLineLen += AsciiStrLen(cmd_unlock);
+  CmdLineLen += AsciiStrLen(cmd_update_cmdline);
+  
+  ParamLen = AsciiStrLen (cmd_cpuid_hash);
+  BootConfigFlag = IsAndroidBootParam (cmd_cpuid_hash, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_cpuid_hash, NULL, BootConfigListHead, ParamLen, 0); 
+  
+  ParamLen = AsciiStrLen (cmd_toolid);
+  BootConfigFlag = IsAndroidBootParam (cmd_toolid, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_toolid, NULL, BootConfigListHead, ParamLen, 0); 
+  
+  CmdLineLen += AsciiStrLen(cmd_fuse_Info);
+  
+  ParamLen = AsciiStrLen (cmd_fuse_prop);
+  BootConfigFlag = IsAndroidBootParam (cmd_fuse_prop, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_fuse_prop, NULL, BootConfigListHead, ParamLen, 0); 
+  
+  ParamLen = AsciiStrLen (cmd_enable_logcat_asdf);
+  BootConfigFlag = IsAndroidBootParam (cmd_enable_logcat_asdf, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_enable_logcat_asdf, NULL, BootConfigListHead, ParamLen, 0);
+
+  // +++ ASUS_BSP : add for check fuse with no rpmb
+  CmdLineLen += AsciiStrLen(cmd_fuse_no_rpmb_Info);
+  
+  ParamLen = AsciiStrLen (cmd_fuse_no_rpmb_prop);
+  BootConfigFlag = IsAndroidBootParam (cmd_fuse_no_rpmb_prop, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_fuse_no_rpmb_prop, NULL, BootConfigListHead, ParamLen, 0);
+  
+  // +++ ASUS_BSP : add for NFC check hardware sku
+  ParamLen = AsciiStrLen (cmd_hardware_sku_prop);
+  BootConfigFlag = IsAndroidBootParam (cmd_hardware_sku_prop, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_hardware_sku_prop, NULL, BootConfigListHead, ParamLen, 0);
+  
+  // +++ ASUS_BSP : add for check factory crc
+  ParamLen = AsciiStrLen (cmd_factory_crc);
+  BootConfigFlag = IsAndroidBootParam (cmd_factory_crc, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_factory_crc, NULL, BootConfigListHead, ParamLen, 0);
+
+  ParamLen = AsciiStrLen (cmd_retry_count);
+  BootConfigFlag = IsAndroidBootParam (cmd_retry_count, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_retry_count, NULL, BootConfigListHead, ParamLen, 0);
+
+  // +++ ASUS_BSP : add for ddr info
+  /*
+  ParamLen = AsciiStrLen (cmd_ddr_manufacturer);
+  BootConfigFlag = IsAndroidBootParam (cmd_ddr_manufacturer, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_ddr_manufacturer, NULL, BootConfigListHead, ParamLen, 0);
+  
+  ParamLen = AsciiStrLen (cmd_ddr_device_type);
+  BootConfigFlag = IsAndroidBootParam (cmd_ddr_device_type, ParamLen, HeaderVersion);
+  ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+  AddtoBootConfigList (BootConfigFlag, cmd_ddr_device_type, NULL, BootConfigListHead, ParamLen, 0);
+  */
+  
+  if (IsAuthorized_3())
+  {
+    ParamLen = AsciiStrLen (cmd_watermask_unlock_prop);
+    BootConfigFlag = IsAndroidBootParam (cmd_watermask_unlock_prop, ParamLen, HeaderVersion);
+    ADD_PARAM_LEN (BootConfigFlag, ParamLen, CmdLineLen, BootConfigLen);
+    AddtoBootConfigList (BootConfigFlag, cmd_watermask_unlock_prop, NULL, BootConfigListHead, ParamLen, 0);
+  }
+
+  // +++ ASUS_BSP : add for panel uid
+  CmdLineLen += AsciiStrLen(cmd_unique_id);
+
+  CmdLineLen += AsciiStrLen(cmd_uart_status);
+
+  // +++ ASUS_BSP : add for WaterMask unlock
+  if (IsAuthorized_3())
+  {
+    CmdLineLen += AsciiStrLen(cmd_watermask_unlock);
+  }
+  
+#endif
 
   ParamLen = AsciiStrLen (AndroidBootFstabSuffix);
   BootConfigFlag = IsAndroidBootParam (AndroidBootFstabSuffix, ParamLen,
@@ -1289,21 +1899,6 @@ UpdateCmdLine (CONST CHAR8 *CmdLine,
   } else {
     Param.FstabSuffix = FstabSuffixDefault;
   }
-
-#ifdef FSTAB_DDR_SUFFIX
-  Status = GetDdrSize (&DdrSize);
-  if (EFI_ERROR (Status)) {
-    DEBUG ((EFI_D_INFO, "Error getting DDR size %r\n", Status));
-  } else {
-    DdrSize = ALIGN_VALUE (DdrSize, GB);
-    DdrSizeGb = DdrSize / GB;
-    AsciiSPrint (DdrSuffix, MAX_DDR_SUFFIX, "_%ugbDDR", DdrSizeGb);
-    AsciiStrCatS (Param.FstabSuffix, MAX_FSTAB_SUFFIX, DdrSuffix);
-  }
-#else
-  DEBUG ((EFI_D_INFO, "FSTAB_DDR_SUFFIX not set\n"));
-#endif
-
   Param.AndroidBootFstabSuffix = AndroidBootFstabSuffix;
   AddtoBootConfigList (BootConfigFlag, AndroidBootFstabSuffix,
                   Param.FstabSuffix,
@@ -1352,8 +1947,21 @@ UpdateCmdLine (CONST CHAR8 *CmdLine,
     Param.MemOffAmt = NULL;
   }
 
+  if (EarlyEthEnabled ()) {
+    GetEarlyEthInfoFromPartition (IPv4AddrBufCmdLine,
+                                 IPv6AddrBufCmdLine,
+                                 MacEthAddrBufCmdLine);
+    CmdLineLen += AsciiStrLen (IPv4AddrBufCmdLine);
+    CmdLineLen += AsciiStrLen (IPv6AddrBufCmdLine);
+    CmdLineLen += AsciiStrLen (MacEthAddrBufCmdLine);
+  }
+
   /* 1 extra byte for NULL */
   CmdLineLen += 1;
+
+  if (IsHibernationEnabled ()) {
+    CmdLineLen += GetResumeCmdLine (&ResumeCmdLine, (CHAR16 *)L"swap_a");
+  }
 
   Param.Recovery = Recovery;
   Param.MultiSlotBoot = MultiSlotBoot;
@@ -1366,6 +1974,7 @@ UpdateCmdLine (CONST CHAR8 *CmdLine,
   Param.SlotSuffixAscii = SlotSuffixAscii;
   Param.ChipBaseBand = ChipBaseBand;
   Param.DisplayCmdLine = DisplayCmdLine;
+  Param.HwFenceCmdLine = HwFenceCmdLine;
   Param.CmdLine = CmdLine;
   Param.AlarmBootCmdLine = AlarmBootCmdLine;
   Param.MdtpActiveFlag = MdtpActiveFlag;
@@ -1384,10 +1993,95 @@ UpdateCmdLine (CONST CHAR8 *CmdLine,
   Param.DtboIdxStr = DtboIdxStr;
   Param.DtbIdxStr = DtbIdxStr;
   Param.LEVerityCmdLine = LEVerityCmdLine;
-  Param.HeaderVersion = HeaderVersion;
-  Param.SystemdSlotEnv = SystemdSlotEnv;
+#ifdef ASUS_BUILD
+  Param.cmd_asus_hwid = cmd_asus_hwid;  
+  // +++ ASUS_BSP : add for ftm mode
+  Param.cmd_enable_adb_mode = cmd_enable_adb_mode;
+  Param.cmd_enable_adb_prop = cmd_enable_adb_prop;
+  Param.cmd_ftm_mode = cmd_ftm_mode;
+  Param.cmd_ftm_mode_prop = cmd_ftm_mode_prop;
+  Param.cmd_selinux = cmd_selinux;
+  Param.cmd_selinux_prop = cmd_selinux_prop;
+  //+++ ASUS_BSP : add for ASUS ID value
+  Param.cmd_prj_id = cmd_prj_id;
+  Param.cmd_stage_id = cmd_stage_id;
+  Param.cmd_sku_id = cmd_sku_id;
+  Param.cmd_rf_id = cmd_rf_id;
+  Param.cmd_fp_id = cmd_fp_id;
+  Param.cmd_ddr_id = cmd_ddr_id;
+  Param.cmd_feature_id = cmd_feature_id;
+  Param.cmd_jtag_id = cmd_jtag_id;
+  Param.cmd_pcb_id = cmd_pcb_id;
+  Param.cmd_nfc_id = cmd_nfc_id;
+  Param.cmd_lgf_con_id = cmd_lgf_con_id;
+  Param.cmd_fc_id = cmd_fc_id;
+  Param.cmd_upper_id = cmd_upper_id;
+  Param.cmd_sub_id = cmd_sub_id;
+  Param.cmd_valid_image= cmd_valid_image;
+  // +++ ASUS_BPS : add for read country code
+  Param.cmd_country_code = cmd_country_code;
+  Param.cmd_product_name= cmd_product_name;
+  // +++ ASUS_BSP : add for boot count
+  Param.cmd_boot_count = cmd_boot_count;
+  // +++ ASUS_BSP : add for reboot reason
+  Param.cmd_boot_reason = cmd_boot_reason;
+  // +++ ASUS_BSP : check if have rawdump partition or not
+  Param.cmd_rawdump_en = cmd_rawdump_en;
+  Param.cmd_asus_info = cmd_asus_info;
+  Param.cmd_authorized_prop = cmd_authorized_prop;
+  Param.cmd_unlock = cmd_unlock;
+  Param.cmd_update_cmdline = cmd_update_cmdline;
+  Param.cmd_cpuid_hash = cmd_cpuid_hash;
+  Param.cmd_toolid = cmd_toolid;
+  Param.cmd_fuse_Info = cmd_fuse_Info;
+  Param.cmd_fuse_prop = cmd_fuse_prop;
+  Param.cmd_enable_logcat_asdf = cmd_enable_logcat_asdf;
+  // +++ ASUS_BSP : add for check fuse with no rpmb
+  Param.cmd_fuse_no_rpmb_Info = cmd_fuse_no_rpmb_Info;
+  Param.cmd_fuse_no_rpmb_prop = cmd_fuse_no_rpmb_prop;
+  // +++ ASUS_BSP : add for check factory crc
+  Param.cmd_factory_crc = cmd_factory_crc;
+  Param.cmd_retry_count = cmd_retry_count;
+  Param.RecoveryMode = RecoveryMode;
+  // +++ ASUS_BSP : add for ddr info
+  //Param.cmd_ddr_manufacturer = cmd_ddr_manufacturer;
+  //Param.cmd_ddr_device_type = cmd_ddr_device_type;
+  // +++ ASUS_BSP : add for panel uid
+  Param.cmd_unique_id = cmd_unique_id;
+  Param.cmd_uart_status = cmd_uart_status;
 
-  Status = UpdateCmdLineParams (&Param, FinalCmdLine);
+  Param.cmd_lgf_id = cmd_lgf_id;
+  
+  if(adb_enter_shipping_mode){
+    Param.ShippingMode = ShippingMode;
+  }
+
+  // +++ ASUS_BSP : add for WaterMask unlock
+  if (IsAuthorized_3())
+  {
+    Param.cmd_watermask_unlock = cmd_watermask_unlock;
+    Param.cmd_watermask_unlock_prop = cmd_watermask_unlock_prop;
+  }
+  // --- ASUS_BSP : add for WaterMask unlock
+  
+  // +++ ASUS_BSP : add for NFC check hardware sku
+  Param.cmd_hardware_sku_prop = cmd_hardware_sku_prop;
+
+#endif
+  Param.HeaderVersion = HeaderVersion;
+  Param.HeaderVersion = HeaderVersion;
+
+  if (EarlyEthEnabled ()) {
+    Param.EarlyIPv4CmdLine = IPv4AddrBufCmdLine;
+    Param.EarlyIPv6CmdLine = IPv6AddrBufCmdLine;
+    Param.EarlyEthMacCmdLine = MacEthAddrBufCmdLine;
+  }
+
+  if (IsHibernationEnabled ()) {
+    Param.ResumeCmdLine = ResumeCmdLine;
+  }
+
+  Status = UpdateCmdLineParams (&Param, FinalCmdLine, BootParamlistPtr);
   if (Status != EFI_SUCCESS) {
     return Status;
   }
@@ -1402,8 +2096,8 @@ UpdateCmdLine (CONST CHAR8 *CmdLine,
   if (*FinalCmdLine) {
     DEBUG ((EFI_D_INFO, "Cmdline: %a\n", *FinalCmdLine));
   }
-  DEBUG ((EFI_D_INFO, "\n"));
   if (*FinalBootConfig) {
+    DEBUG ((EFI_D_INFO, "\n"));
     DEBUG ((EFI_D_INFO, "BootConfig: %a\n", *FinalBootConfig));
   }
 

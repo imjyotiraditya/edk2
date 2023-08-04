@@ -24,13 +24,12 @@
  * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
  * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
  * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
-
+ */
 
 /*
  * Changes from Qualcomm Innovation Center are provided under the following license:
  *
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  *  Redistribution and use in source and binary forms, with or without
  *  modification, are permitted (subject to the limitations in the
@@ -65,6 +64,7 @@
 
 #include "libfdt.h"
 #include <Library/DebugLib.h>
+#include <Library/Debug.h>
 #include <Library/LinuxLoaderLib.h>
 #include <Library/PartialGoods.h>
 #include <Protocol/EFIChipInfo.h>
@@ -104,21 +104,10 @@ static struct PartialGoods PartialGoodsCpuType1[] = {
     {0x40, "/cpus", {"cpu@108", "enable-method", "psci", "none"}},
 };
 
-static struct PartialGoods PartialGoodsCpuType2[] = {
-    {0x1, "/cpus", {"cpu@0", "enable-method", "psci", "none"}},
-    {0x2, "/cpus", {"cpu@1", "enable-method", "psci", "none"}},
-    {0x4, "/cpus", {"cpu@2", "enable-method", "psci", "none"}},
-    {0x8, "/cpus", {"cpu@3", "enable-method", "psci", "none"}},
-    {0x10, "/cpus", {"cpu@100", "enable-method", "psci", "none"}},
-    {0x20, "/cpus", {"cpu@101", "enable-method", "psci", "none"}},
-    {0x40, "/cpus", {"cpu@102", "enable-method", "psci", "none"}},
-    {0x80, "/cpus", {"cpu@103", "enable-method", "psci", "none"}},
-};
-
 #define NUM_OF_CPUS (ARRAY_SIZE(PartialGoodsCpuType0))
 
 STATIC struct PartialGoods *PartialGoodsCpuType[MAX_CPU_CLUSTER] = {
-    PartialGoodsCpuType0, PartialGoodsCpuType1, PartialGoodsCpuType2};
+    PartialGoodsCpuType0, PartialGoodsCpuType1};
 
 /* Look up table for multimedia partial goods */
 static struct PartialGoods PartialGoodsMmType[] = {
@@ -134,15 +123,6 @@ static struct PartialGoods PartialGoodsMmType[] = {
     {BIT (EFICHIPINFO_PART_GPU),
      "/soc",
      {"qcom,gpucc", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_GPU),
-     "/soc",
-     {"qcom,kgsl-iommu", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_GPU),
-     "/soc",
-     {"qcom,gpu-coresight-cx", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_GPU),
-     "/soc",
-     {"qcom,gpu-coresight-gx", "status", "ok", "no"}},
     {BIT (EFICHIPINFO_PART_VIDEO),
      "/soc",
      {"qcom,vidc", "status", "ok", "no"}},
@@ -244,9 +224,6 @@ static struct PartialGoods PartialGoodsMmType[] = {
      {"qcom,cci1", "status", "ok", "no"}},
     {BIT (EFICHIPINFO_PART_CAMERA),
      "/soc",
-     {"qcom,cci2", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_CAMERA),
-     "/soc",
      {"qcom,jpegenc", "status", "ok", "no"}},
     {BIT (EFICHIPINFO_PART_CAMERA),
      "/soc",
@@ -257,12 +234,6 @@ static struct PartialGoods PartialGoodsMmType[] = {
     {BIT (EFICHIPINFO_PART_CAMERA),
      "/soc",
      {"qcom,camera-flash1", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_CAMERA),
-     "/soc",
-     {"qcom,camera-flash2", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_CAMERA),
-     "/soc",
-     {"qcom,camera-flash3", "status", "ok", "no"}},
     {BIT (EFICHIPINFO_PART_CAMERA),
      "/soc",
      {"qcom,cam-icp", "status", "ok", "no"}},
@@ -295,55 +266,7 @@ static struct PartialGoods PartialGoodsMmType[] = {
      {"qcom,vfe1", "status", "ok", "no"}},
     {BIT (EFICHIPINFO_PART_CAMERA),
      "/soc",
-     {"qcom,csid2", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_CAMERA),
-     "/soc",
-     {"qcom,cam-sync", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_CAMERA),
-     "/soc",
-     {"qcom,rt-cdm0", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_CAMERA),
-     "/soc",
-     {"qcom,rt-cdm1", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_CAMERA),
-     "/soc",
-     {"qcom,rt-cdm2", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_CAMERA),
-     "/soc",
-     {"qcom,rt-cdm3", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_CAMERA),
-     "/soc",
-     {"qcom,rt-cdm4", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_CAMERA),
-     "/soc",
-     {"qcom,icp", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_CAMERA),
-     "/soc",
-     {"qcom,ife2", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_CAMERA),
-     "/soc",
-     {"qcom,sfe0", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_CAMERA),
-     "/soc",
-     {"qcom,jpegenc0", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_CAMERA),
-     "/soc",
-     {"qcom,jpegdma0", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_CAMERA),
-     "/soc",
-     {"qcom,sfe1", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_CAMERA),
-     "/soc",
-     {"qcom,cam-res-mgr", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_CAMERA),
-     "/soc",
-     {"qcom,actuator", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_CAMERA),
-     "/soc",
-     {"qcom,eeprom", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_CAMERA),
-     "/soc",
-     {"qcom,cam-sensor", "status", "ok", "no"}},
+     {"qcom,camcc", "status", "ok", "no"}},
     {BIT (EFICHIPINFO_PART_DISPLAY),
      "/soc",
      {"qcom,mdss_mdp", "status", "ok", "no"}},
@@ -356,12 +279,6 @@ static struct PartialGoods PartialGoodsMmType[] = {
     {BIT (EFICHIPINFO_PART_DISPLAY),
      "/soc",
      {"qcom,mdss_dsi1_ctrl", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_DISPLAY),
-     "/soc",
-     {"qcom,mdss_dsi_ctrl0", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_DISPLAY),
-     "/soc",
-     {"qcom,mdss_dsi_ctrl1", "status", "ok", "no"}},
     {BIT (EFICHIPINFO_PART_DISPLAY),
      "/soc",
      {"qcom,mdss_dsi_phy0", "status", "ok", "no"}},
@@ -379,12 +296,6 @@ static struct PartialGoods PartialGoodsMmType[] = {
      {"qcom,mdss_dsi_pll", "status", "ok", "no"}},
     {BIT (EFICHIPINFO_PART_DISPLAY),
      "/soc",
-     {"qcom,dsi-display-primary", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_DISPLAY),
-     "/soc",
-     {"qcom,dsi-display-secondary", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_DISPLAY),
-     "/soc",
      {"qcom,mdss_dp_pll", "status", "ok", "no"}},
     {BIT (EFICHIPINFO_PART_DISPLAY),
      "/soc",
@@ -398,15 +309,6 @@ static struct PartialGoods PartialGoodsMmType[] = {
     {BIT (EFICHIPINFO_PART_DISPLAY),
      "/soc",
      {"qcom,dispcc", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_DISPLAY),
-     "/soc",
-     {"qcom,msm_hdcp", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_DISPLAY),
-     "/soc",
-     {"qcom,smmu_sde_sec_cb", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_DISPLAY),
-     "/soc",
-     {"qcom,smmu_sde_unsec_cb", "status", "ok", "no"}},
     {BIT (EFICHIPINFO_PART_AUDIO),
      "/soc",
      {"qcom,msm-adsp-loader", "status", "ok", "no"}},
@@ -418,34 +320,31 @@ static struct PartialGoods PartialGoodsMmType[] = {
      {"qcom,msm-adsprpc-mem", "status", "ok", "no"}},
     {BIT (EFICHIPINFO_PART_AUDIO),
      "/soc",
-     {"remoteproc-adsp", "status", "ok", "no"}},
+     {"qcom,msm_fastrpc", "status", "ok", "no"}},
     {BIT (EFICHIPINFO_PART_MODEM),
-     "/soc",
-     {"qcom,mss", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_MODEM),
-     "/soc",
-     {"remoteproc-mss", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_WLAN),
      "/soc",
      {"qcom,mss", "status", "ok", "no"}},
     {BIT (EFICHIPINFO_PART_WLAN),
      "/soc",
-     {"remoteproc-wpss", "status", "ok", "no"}},
+     {"qcom,mss", "status", "ok", "no"}},
     {BIT (EFICHIPINFO_PART_COMP),
      "/soc",
      {"qcom,turing", "status", "ok", "no"}},
     {BIT (EFICHIPINFO_PART_COMP),
      "/soc",
-     {"remoteproc-cdsp", "status", "ok", "no"}},
+     {"qcom,msm-adsprpc-mem", "status", "ok", "no"}},
+    {BIT (EFICHIPINFO_PART_COMP),
+     "/soc",
+     {"qcom,msm_fastrpc", "status", "ok", "no"}},
+    {BIT (EFICHIPINFO_PART_SENSORS),
+     "/soc",
+     {"qcom,msm-adsprpc-mem", "status", "ok", "no"}},
+    {BIT (EFICHIPINFO_PART_SENSORS),
+     "/soc",
+     {"qcom,msm_fastrpc", "status", "ok", "no"}},
     {BIT (EFICHIPINFO_PART_SENSORS),
      "/soc",
      {"qcom,ssc", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_SENSORS),
-     "/soc",
-     {"remoteproc-slpi", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_SPSS),
-     "/soc",
-     {"remoteproc-spss", "status", "ok", "no"}},
     {BIT (EFICHIPINFO_PART_NPU),
      "/soc",
      {"qcom,npucc", "status", "ok", "no"}},
@@ -455,55 +354,7 @@ static struct PartialGoods PartialGoodsMmType[] = {
     {BIT (EFICHIPINFO_PART_NAV),
      "/soc",
      {"qcom,mss", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_NSP),
-     "/soc",
-     {"qcom,npucc", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_NSP),
-     "/soc",
-     {"qcom,npu", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_NSP),
-     "/soc",
-     {"qcom,turing", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_NSP),
-     "/soc",
-     {"remoteproc-cdsp", "status", "ok", "no"}},
-    {BIT (EFICHIPINFO_PART_EVA),
-     "/soc",
-     {"qcom,cvp", "status", "ok", "no"}},
 };
-
-STATIC EFI_STATUS
-CheckCPUType (VOID *fdt,
-              UINT32 TableSz,
-              struct PartialGoods *Table)
-{
-  struct SubNodeListNew *SNode = NULL;
-  INT32 SubNodeOffset = 0;
-  INT32 ParentOffset = 0;
-  UINT32 i;
-
-  for (i = 0; i < TableSz; i++, Table++)
-  {
-    /* Find the parent node */
-    ParentOffset = fdt_path_offset (fdt, Table->ParentNode);
-    if (ParentOffset < 0) {
-      DEBUG ((EFI_D_ERROR, "Failed to Get parent node: %a\terror: %d\n",
-                                Table->ParentNode, ParentOffset));
-      return EFI_NOT_FOUND;
-    }
-
-    /* Find the subnode */
-    SNode = &(Table->SubNode);
-    SubNodeOffset = fdt_subnode_offset (fdt, ParentOffset,
-                                      SNode->SubNodeName);
-    if (SubNodeOffset < 0) {
-      DEBUG ((EFI_D_INFO, "Subnode: %a is not present, breaking loop\n",
-                                SNode->SubNodeName));
-      return EFI_NOT_FOUND;
-    }
-  }
-  return EFI_SUCCESS;
-}
 
 STATIC VOID
 FindNodeAndUpdateProperty (VOID *fdt,
@@ -544,25 +395,11 @@ FindNodeAndUpdateProperty (VOID *fdt,
                       (CONST VOID *)SNode->ReplaceStr,
                       AsciiStrLen (SNode->ReplaceStr) + 1);
     if (!Ret) {
-      DEBUG ((EFI_D_INFO, "Partial goods (%a) %a property disabled\n",
-              SNode->SubNodeName, SNode->PropertyName));
+      DEBUG ((EFI_D_INFO, "Partial goods (%a) status property disabled\n",
+              SNode->SubNodeName));
     } else {
       DEBUG ((EFI_D_ERROR, "Failed to update property: %a, ret =%d \n",
               SNode->PropertyName, Ret));
-    }
-
-    if (!AsciiStrCmp (Table->ParentNode, "/cpus")) {
-      /* Add/Replace the status property to fail */
-      Ret = FdtSetProp (fdt, SubNodeOffset, "status",
-                        (CONST VOID *)"fail",
-                        AsciiStrLen ("fail") + 1);
-      if (!Ret) {
-        DEBUG ((EFI_D_INFO, "Partial goods (%a) status property updated\n",
-                SNode->SubNodeName));
-      } else {
-        DEBUG ((EFI_D_ERROR, "Failed to update property: %a, ret =%d \n",
-                SNode->SubNodeName, Ret));
-      }
     }
   }
 }
@@ -570,18 +407,24 @@ FindNodeAndUpdateProperty (VOID *fdt,
 STATIC EFI_STATUS
 ReadCpuPartialGoods (EFI_CHIPINFO_PROTOCOL *pChipInfoProtocol, UINT32 *Value)
 {
-  UINT32 CpuCluster = 0;
+  UINT32 i;
   EFI_STATUS Status = EFI_SUCCESS;
+  UINT32 DefectVal;
 
-   /* Ensure to reset the Value before checking CPU subset */
-  *Value = 0;
+  for (i = 0; i < MAX_CPU_CLUSTER; i++) {
+    /* Ensure to reset the Value before checking CPU part for defect */
+    DefectVal = 0;
+    Value[i] = 0;
 
-  Status =
-      pChipInfoProtocol->GetSubsetCPUs (pChipInfoProtocol, CpuCluster,
-                                           Value);
-  if (EFI_ERROR (Status)) {
-    DEBUG ((EFI_D_VERBOSE, "Failed to get subset[%d] CPU. %r\n",
-            CpuCluster, Status));
+    Status =
+        pChipInfoProtocol->GetDefectiveCPUs (pChipInfoProtocol, i, &DefectVal);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((EFI_D_VERBOSE, "Failed to get CPU defective[%d] part. %r\n", i,
+              Status));
+      continue;
+    }
+
+    Value[i] = DefectVal;
   }
 
   if (Status == EFI_NOT_FOUND)
@@ -595,22 +438,22 @@ ReadMMPartialGoods (EFI_CHIPINFO_PROTOCOL *pChipInfoProtocol, UINT32 *Value)
 {
   UINT32 i;
   EFI_STATUS Status = EFI_SUCCESS;
-  UINT32 SubsetVal;
+  UINT32 DefectVal;
 
   *Value = 0;
   for (i = 1; i < EFICHIPINFO_NUM_PARTS; i++) {
-    /* Ensure to reset the Value before checking for Part Subset*/
-    SubsetVal = 0;
+    /* Ensure to reset the Value before checking for defect Part*/
+    DefectVal = 0;
 
     Status =
-        pChipInfoProtocol->GetSubsetPart (pChipInfoProtocol, i, &SubsetVal);
+        pChipInfoProtocol->GetDefectivePart (pChipInfoProtocol, i, &DefectVal);
     if (EFI_ERROR (Status)) {
-      DEBUG ((EFI_D_VERBOSE, "Failed to get MM subset[%d] part. %r\n", i,
+      DEBUG ((EFI_D_VERBOSE, "Failed to get MM defective[%d] part. %r\n", i,
               Status));
       continue;
     }
 
-    *Value |= (SubsetVal << i);
+    *Value |= (DefectVal << i);
   }
 
   if (Status == EFI_NOT_FOUND)
@@ -624,8 +467,7 @@ UpdatePartialGoodsNode (VOID *fdt)
 {
   UINT32 i;
   UINT32 PartialGoodsMMValue = 0;
-  UINT32 PartialGoodsCpuValue;
-  UINT32 PartialGoodsCPUTypeValue = 0;
+  UINT32 PartialGoodsCpuValue[MAX_CPU_CLUSTER];
   EFI_CHIPINFO_PROTOCOL *pChipInfoProtocol;
   EFI_STATUS Status = EFI_SUCCESS;
 
@@ -652,33 +494,20 @@ UpdatePartialGoodsNode (VOID *fdt)
   }
 
   /* Read and update CPU Partial Goods nodes */
-  Status = ReadCpuPartialGoods (pChipInfoProtocol, &PartialGoodsCpuValue);
+  Status = ReadCpuPartialGoods (pChipInfoProtocol, PartialGoodsCpuValue);
   if (Status != EFI_SUCCESS) {
     DEBUG ((EFI_D_INFO, "No partial goods for cpu ss found.\n"));
   }
 
-  DEBUG ((EFI_D_INFO, "PartialGoods Value: 0x%x\n",
-              PartialGoodsCpuValue));
-
-  if (!PartialGoodsCpuValue) {
-    return EFI_SUCCESS;
-  }
-
   for (i = 0; i < MAX_CPU_CLUSTER; i++) {
-    Status = CheckCPUType (fdt, NUM_OF_CPUS, &PartialGoodsCpuType[i][0]);
-
-    if (Status == EFI_SUCCESS) {
-      PartialGoodsCPUTypeValue = i;
-      DEBUG ((EFI_D_INFO, "CPUType Match for for Cluster[%d]\n", i));
-      break;
-    } else {
-        DEBUG ((EFI_D_INFO, "CPUType Mismatch for for Cluster[%d]\n", i));
+    if (PartialGoodsCpuValue[i]) {
+      DEBUG ((EFI_D_INFO, "PartialGoods for Cluster[%d]: 0x%x\n", i,
+              PartialGoodsCpuValue[i]));
+      FindNodeAndUpdateProperty (fdt, NUM_OF_CPUS,
+                                 &PartialGoodsCpuType[i][0],
+                                 PartialGoodsCpuValue[i]);
     }
   }
-
-  FindNodeAndUpdateProperty (fdt, NUM_OF_CPUS,
-                             &PartialGoodsCpuType[PartialGoodsCPUTypeValue][0],
-                             PartialGoodsCpuValue);
 
   return EFI_SUCCESS;
 }

@@ -26,47 +26,48 @@
  * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-/* Changes from Qualcomm Innovation Center are provided under the following
- * license:
+/*
+ * Changes from Qualcomm Innovation Center are provided under the following license:
  *
  * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted (subject to the limitations in the
- * disclaimer below) provided that the following conditions are met:
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted (subject to the limitations in the
+ *  disclaimer below) provided that the following conditions are met:
  *
- *    * Redistributions of source code must retain the above copyright
- *      notice, this list of conditions and the following disclaimer.
+ *      * Redistributions of source code must retain the above copyright
+ *        notice, this list of conditions and the following disclaimer.
  *
- *    * Redistributions in binary form must reproduce the above
- *      copyright notice, this list of conditions and the following
- *      disclaimer in the documentation and/or other materials provided
- *      with the distribution.
+ *      * Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and/or other materials provided
+ *        with the distribution.
  *
- *    * Neither the name of Qualcomm Innovation Center, Inc. nor the names of
- *      its contributors may be used to endorse or promote products derived
- *      from this software without specific prior written permission.
+ *      * Neither the name of Qualcomm Innovation Center, Inc. nor the names of its
+ *        contributors may be used to endorse or promote products derived
+ *        from this software without specific prior written permission.
  *
- * NO EXPRESS OR IMPLIED LICENSES TO ANY PARTY'S PATENT RIGHTS ARE
- * GRANTED BY THIS LICENSE. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT
- * HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED
- * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
- * IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
- * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
- * GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
- * IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
- * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+ *  NO EXPRESS OR IMPLIED LICENSES TO ANY PARTY'S PATENT RIGHTS ARE
+ *  GRANTED BY THIS LICENSE. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT
+ *  HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED
+ *   WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+ *  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ *  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ *  ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ *  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+ *  GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ *  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+ *  IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+ *  OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
+ *  IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
 
 #include "KeymasterClient.h"
 #include "VerifiedBoot.h"
 #include "libavb/libavb.h"
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
+#include <Library/Debug.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiRuntimeServicesTableLib.h>
 #include <Protocol/EFIQseecom.h>
@@ -124,6 +125,7 @@ typedef enum {
   KEYMASTER_PROVISION_ATTEST_KEY = (KEYMASTER_UTILS_CMD_ID + 9UL),
   KEYMASTER_SET_VBH = (KEYMASTER_UTILS_CMD_ID + 17UL),
   KEYMASTER_GET_DATE_SUPPORT = (KEYMASTER_UTILS_CMD_ID + 21UL),
+  KEYMASTER_FBE_SET_SEED = (KEYMASTER_UTILS_CMD_ID + 24UL),
 
   KEYMASTER_LAST_CMD_ENTRY = (int)0xFFFFFFFFULL
 } KeyMasterCmd;
@@ -193,6 +195,14 @@ typedef struct {
 typedef struct {
   INT32 Status;
 } __attribute__ ((packed)) KMGetDateSupportRsp;
+
+typedef struct {
+  UINT32 CmdId;
+} __attribute__ ((packed)) KMFbeSetSeedReq;
+
+typedef struct {
+  INT32 Status;
+} __attribute__ ((packed)) KMFbeSetSeedRsp;
 
 EFI_STATUS
 KeyMasterStartApp (KMHandle *Handle)
@@ -458,6 +468,10 @@ KeyMasterSetRotForLE (KMRotAndBootStateForLE *BootState)
                        sizeof (BootState->IsUnlocked));
   /* RotDigest is a fixed size array, cannot be NULL */
   RotDigest = (CHAR8 *)avb_sha256_final (&RotCtx);
+  if (!*RotDigest) {
+      DEBUG ((EFI_D_ERROR, "Failed to set ROT Digest\n"));
+      return EFI_INVALID_PARAMETER;
+  }
 
   /* Load KeyMaster App */
   GUARD (KeyMasterStartApp (&Handle));
@@ -480,5 +494,28 @@ KeyMasterSetRotForLE (KMRotAndBootStateForLE *BootState)
   }
 
   DEBUG ((EFI_D_INFO, "KeyMasterSetRotForLE success\n"));
+  return Status;
+}
+
+EFI_STATUS KeyMasterFbeSetSeed (VOID)
+{
+  EFI_STATUS Status = EFI_SUCCESS;
+  KMFbeSetSeedReq Req = {0};
+  KMFbeSetSeedRsp Rsp = {0};
+  KMHandle Handle = {NULL};
+
+  GUARD (KeyMasterStartApp (&Handle));
+  Req.CmdId = KEYMASTER_FBE_SET_SEED;
+  Status = Handle.QseeComProtocol->QseecomSendCmd (
+      Handle.QseeComProtocol, Handle.AppId, (UINT8 *)&Req, sizeof (Req),
+      (UINT8 *)&Rsp, sizeof (Rsp));
+  if (Status != EFI_SUCCESS ||
+                Rsp.Status != 0 ) {
+    DEBUG ((EFI_D_ERROR, "Keymaster: fbe set seed error, status: "
+                         "%d, response status: %d\n",
+            Status, Rsp.Status));
+    return EFI_LOAD_ERROR;
+  }
+
   return Status;
 }

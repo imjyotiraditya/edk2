@@ -70,6 +70,7 @@
 #include "list.h"
 #include <Library/BootLinux.h>
 #include <Library/DebugLib.h>
+#include <Library/Debug.h>
 #include <Library/MemoryAllocationLib.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiLib.h>
@@ -107,14 +108,10 @@
 #define PLATFORM_SUBTYPE_SHIFT_ID (0x18)
 #define FOUNDRY_ID_MASK (0x00ff0000)
 #define PLATFORM_SUBTYPE_MASK (0x000000ff)
-#define OEM_ID_MASK (0xff000000)
-#define OEM_ID_SHIFT 24
 #define DDR_MASK (0x00000700)
 
 typedef enum {
   NONE_MATCH,
-  OEM_FLAVOR_DEFAULT_MATCH,
-  OEM_FLAVOR_EXACT_MATCH,
   PMIC_MATCH_BEST_REV_IDX0,
   PMIC_MATCH_EXACT_REV_IDX0,
   PMIC_MATCH_BEST_REV_IDX1,
@@ -207,7 +204,6 @@ typedef struct DtInfo {
   UINT32 DtVariantMajor;
   UINT32 DtVariantMinor;
   UINT32 DtPlatformSubtype;
-  UINT32 DtOEMVariantId;
   UINT32 DtPmicModel[MAX_PMIC_IDX];
   UINT32 DtPmicRev[MAX_PMIC_IDX];
   UINT64 DtMatchVal;
@@ -274,10 +270,6 @@ struct board_id {
 
 struct pmic_id {
   UINT32 pmic_version[4];
-};
-
-struct oem_id {
-  UINT32 oem_variant_id;
 };
 
 #define PLAT_ID_SIZE    sizeof (struct plat_id)

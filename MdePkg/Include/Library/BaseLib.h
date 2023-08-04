@@ -5215,13 +5215,14 @@ CalculateCheckSum64 (
   @retval Crc32            The 32-bit CRC was computed for the data buffer.
 
 **/
+/*
 UINT32
 EFIAPI
 CalculateCrc32(
   IN  VOID                         *Buffer,
   IN  UINTN                        Length
   );
-
+*/
 //
 // Base Library CPU Functions
 //
